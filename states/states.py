@@ -1,0 +1,32 @@
+from aiogram.fsm.state import State, StatesGroup
+
+
+class AuthStates(StatesGroup):
+    choosing_role = State()
+    entering_name = State()
+
+
+class TeacherStates(StatesGroup):
+    # ── Create test wizard ──────────────────────────────
+    entering_title = State()
+    selecting_subject = State()
+    creating_subject = State()
+    entering_description = State()
+    choosing_visibility = State()
+
+    # ── Adding questions ────────────────────────────────
+    entering_question_text = State()
+    entering_option = State()       # collecting option texts
+    marking_correct = State()       # picking correct option via inline btn
+
+    # ── Managing existing tests ─────────────────────────
+    viewing_my_tests = State()
+    viewing_results = State()
+
+
+class StudentStates(StatesGroup):
+    browsing_subjects = State()
+    browsing_tests = State()
+    entering_access_code = State()
+    taking_test = State()
+    viewing_my_results = State()

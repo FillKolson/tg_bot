@@ -1,25 +1,32 @@
 import asyncio
 import logging
 import os
+import sys
+
+# Ensure the project root is always on the path,
+# so local packages (db, handlers, keyboards, states) are found
+# regardless of where Python is invoked from.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
-
 from supabase import create_async_client, AsyncClient
+
+from db import queries
+from handlers import auth, common, teacher, student
 
 # Load environment variables
 load_dotenv()
 
-# Bot and Supabase configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
 SUPABASE_KEY = os.getenv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY")
 
 # Logging setup
 logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -27,21 +34,29 @@ bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-supabase: AsyncClient = None
+# Register routers (order matters — common first for /start, /cancel)
+dp.include_router(common.router)
+dp.include_router(auth.router)
+dp.include_router(teacher.router)
+dp.include_router(student.router)
 
-# Initialize Supabase client
-async def init_supabase():
-    global supabase
-    supabase = await create_async_client(SUPABASE_URL, SUPABASE_KEY)
+
+async def init_supabase() -> AsyncClient:
+    client = await create_async_client(SUPABASE_URL, SUPABASE_KEY)
+    queries.init(client)
     logger.info("Supabase client initialized")
+    return client
 
-# Bot startup
-async def main():
+
+async def main() -> None:
     await init_supabase()
-    logger.info("Bot starting...")
+
+    logger.info("Bot starting…")
     me = await bot.get_me()
     logger.info(f"Bot online: @{me.username} ({me.full_name})")
-    await dp.start_polling(bot)
+
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+
 
 if __name__ == "__main__":
     asyncio.run(main())
