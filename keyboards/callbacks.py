@@ -5,6 +5,10 @@ class RoleCallback(CallbackData, prefix="role"):
     value: str  # "student" | "teacher"
 
 
+class LangCallback(CallbackData, prefix="lang"):
+    value: str  # "uk" | "en"
+
+
 class SubjectCallback(CallbackData, prefix="subj"):
     id: int
 
@@ -16,6 +20,10 @@ class TestCallback(CallbackData, prefix="test"):
 
 class VisibilityCallback(CallbackData, prefix="vis"):
     value: str  # "public" | "private"
+
+
+class AnswerVisibilityCallback(CallbackData, prefix="ansvis"):
+    value: str  # "yes" | "no"
 
 
 class OptionCallback(CallbackData, prefix="opt"):

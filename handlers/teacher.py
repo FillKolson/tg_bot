@@ -19,12 +19,12 @@ from db import queries
 from keyboards.callbacks import (
     SubjectCallback, VisibilityCallback, OptionCallback,
     QuestionNextCallback, DoneOptionsCallback, NewSubjectCallback,
-    TestCallback, BackCallback,
+    TestCallback, BackCallback, AnswerVisibilityCallback,
 )
 from keyboards.keyboards import (
     teacher_menu, subjects_keyboard, visibility_keyboard,
     options_input_keyboard, correct_option_keyboard,
-    question_next_keyboard, my_tests_keyboard,
+    question_next_keyboard, my_tests_keyboard, answer_visibility_keyboard,
 )
 from states.states import TeacherStates
 
@@ -165,15 +165,35 @@ async def enter_description(message: Message, state: FSMContext) -> None:
     await state.update_data(description=desc)
     await message.answer(
         (f"✅ Опис: _{desc}_\n\n" if desc else "⏭ Опис пропущено.\n\n")
-        + "*Крок 4/4* — Тип доступу:",
+        + "*Крок 4/5* — Чи показувати студентам правильність відповідей?",
+        reply_markup=answer_visibility_keyboard(),
+        parse_mode="Markdown",
+    )
+    await state.set_state(TeacherStates.choosing_answer_visibility)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  STEP 4 — Answer visibility
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.callback_query(TeacherStates.choosing_answer_visibility, AnswerVisibilityCallback.filter())
+async def choose_answer_visibility(callback: CallbackQuery, callback_data: AnswerVisibilityCallback, state: FSMContext) -> None:
+    show_answers = callback_data.value == "yes"
+    await state.update_data(show_answer_correctness=show_answers)
+    
+    visibility_text = "✅ Показувати" if show_answers else "❌ Приховувати"
+    await callback.message.edit_text(
+        f"✅ Правильність відповідей: {visibility_text}\n\n"
+        "*Крок 5/5* — Тип доступу:",
         reply_markup=visibility_keyboard(),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.choosing_visibility)
+    await callback.answer()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  STEP 4 — Visibility
+#  STEP 5 — Visibility
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.callback_query(TeacherStates.choosing_visibility, VisibilityCallback.filter())
@@ -350,6 +370,7 @@ async def _finish_test(callback: CallbackQuery, state: FSMContext) -> None:
         is_public=data["is_public"],
         access_code=data.get("access_code"),
         description=data.get("description"),
+        show_answer_correctness=data.get("show_answer_correctness", True),
     )
     await queries.bulk_insert_questions_options(test["id"], questions)
     await state.clear()
@@ -381,7 +402,7 @@ async def my_tests(message: Message, state: FSMContext) -> None:
     if not user:
         return
     await state.clear()
-    tests = await queries.get_teacher_tests(user["id"])
+    tests = await queries.get_teacher_tests(user["id"], message.from_user.id)
 
     if not tests:
         await message.answer("📭 У вас ще немає жодного тесту.\nСтворіть перший через *➕ Створити тест*.",
@@ -409,7 +430,7 @@ async def handle_test_action(callback: CallbackQuery, callback_data: TestCallbac
 
 async def _show_results(callback: CallbackQuery, test_id: int, state: FSMContext) -> None:
     test = await queries.get_test(test_id)
-    sessions = await queries.get_test_results(test_id)
+    sessions = await queries.get_test_results(test_id, callback.from_user.id)
 
     if not sessions:
         await callback.message.edit_text(
@@ -434,7 +455,7 @@ async def _delete_test(callback: CallbackQuery, test_id: int, state: FSMContext)
     if deleted:
         await callback.answer("🗑 Тест видалено.", show_alert=True)
         # Refresh list
-        tests = await queries.get_teacher_tests(user["id"])
+        tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
         if tests:
             await callback.message.edit_reply_markup(reply_markup=my_tests_keyboard(tests))
         else:
@@ -453,7 +474,7 @@ async def results_menu(message: Message, state: FSMContext) -> None:
     if not user:
         return
     await state.clear()
-    tests = await queries.get_teacher_tests(user["id"])
+    tests = await queries.get_teacher_tests(user["id"], message.from_user.id)
 
     if not tests:
         await message.answer("📭 У вас ще немає тестів.")

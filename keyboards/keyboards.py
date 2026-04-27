@@ -4,9 +4,10 @@ from aiogram.types import (
 )
 
 from .callbacks import (
-    RoleCallback, SubjectCallback, TestCallback,
+    RoleCallback, LangCallback, SubjectCallback, TestCallback,
     VisibilityCallback, OptionCallback, QuestionNextCallback,
     DoneOptionsCallback, BackCallback, NewSubjectCallback,
+    AnswerVisibilityCallback,
 )
 
 
@@ -20,24 +21,35 @@ def role_keyboard() -> InlineKeyboardMarkup:
                              callback_data=RoleCallback(value="teacher").pack()),
     ]])
 
+# ── Language selection ──────────────────────────────────────────────────────
+
+def language_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🇺🇦 Українська",
+                             callback_data=LangCallback(value="uk").pack()),
+        InlineKeyboardButton(text="🇬🇧 English",
+                             callback_data=LangCallback(value="en").pack()),
+    ]])
 
 # ── Main menus (Reply) ──────────────────────────────────────────────────────
 
-def teacher_menu() -> ReplyKeyboardMarkup:
+def teacher_menu(lang: str = "uk") -> ReplyKeyboardMarkup:
+    from config.i18n import i18n
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="➕ Створити тест")],
-            [KeyboardButton(text="📋 Мої тести"), KeyboardButton(text="📊 Результати")],
+            [KeyboardButton(text=i18n("menu_create_test", lang))],
+            [KeyboardButton(text=i18n("menu_my_tests", lang)), KeyboardButton(text=i18n("menu_results", lang))],
         ],
         resize_keyboard=True,
     )
 
 
-def student_menu() -> ReplyKeyboardMarkup:
+def student_menu(lang: str = "uk") -> ReplyKeyboardMarkup:
+    from config.i18n import i18n
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📚 Предмети")],
-            [KeyboardButton(text="🔑 Ввести код"), KeyboardButton(text="📈 Мої результати")],
+            [KeyboardButton(text=i18n("menu_subjects", lang))],
+            [KeyboardButton(text=i18n("menu_enter_code", lang)), KeyboardButton(text=i18n("menu_my_results", lang))],
         ],
         resize_keyboard=True,
     )
@@ -105,6 +117,15 @@ def visibility_keyboard() -> InlineKeyboardMarkup:
                              callback_data=VisibilityCallback(value="private").pack()),
     ]])
 
+# ── Answer visibility choice ─────────────────────────────────────────────
+
+def answer_visibility_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Показувати",
+                             callback_data=AnswerVisibilityCallback(value="yes").pack()),
+        InlineKeyboardButton(text="❌ Приховувати",
+                             callback_data=AnswerVisibilityCallback(value="no").pack()),
+    ]])
 
 # ── Options input during question creation ──────────────────────────────────
 

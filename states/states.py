@@ -3,6 +3,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 class AuthStates(StatesGroup):
     choosing_role = State()
+    choosing_language = State()
     entering_name = State()
 
 
@@ -12,6 +13,7 @@ class TeacherStates(StatesGroup):
     selecting_subject = State()
     creating_subject = State()
     entering_description = State()
+    choosing_answer_visibility = State()
     choosing_visibility = State()
 
     # ── Adding questions ────────────────────────────────

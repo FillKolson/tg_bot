@@ -47,7 +47,7 @@ async def browse_subjects(message: Message, state: FSMContext) -> None:
     if not user:
         return
     await state.clear()
-    subjects = await queries.get_subjects()
+    subjects = await queries.get_subjects(message.from_user.id)
 
     if not subjects:
         await message.answer("😔 Публічних предметів ще немає.\nСпробуйте ввести код приватного тесту через 🔑.")
@@ -64,7 +64,7 @@ async def browse_subjects(message: Message, state: FSMContext) -> None:
 @router.callback_query(StudentStates.browsing_subjects, SubjectCallback.filter())
 async def browse_tests(callback: CallbackQuery, callback_data: SubjectCallback, state: FSMContext) -> None:
     subject = await queries.get_subject(callback_data.id)
-    tests = await queries.get_public_tests_by_subject(callback_data.id)
+    tests = await queries.get_public_tests_by_subject(callback_data.id, callback.from_user.id)
 
     if not tests:
         await callback.answer("😔 У цьому предметі ще немає публічних тестів.", show_alert=True)
@@ -82,7 +82,7 @@ async def browse_tests(callback: CallbackQuery, callback_data: SubjectCallback, 
 @router.callback_query(StudentStates.browsing_tests, BackCallback.filter(F.data.endswith("subjects")))
 @router.callback_query(StudentStates.browsing_subjects, BackCallback.filter())
 async def back_to_subjects(callback: CallbackQuery, state: FSMContext) -> None:
-    subjects = await queries.get_subjects()
+    subjects = await queries.get_subjects(callback.from_user.id)
     await callback.message.edit_text(
         "📚 *Оберіть предмет:*",
         reply_markup=subjects_keyboard(subjects),
@@ -113,7 +113,7 @@ async def enter_code_prompt(message: Message, state: FSMContext) -> None:
 @router.message(StudentStates.entering_access_code, F.text)
 async def process_access_code(message: Message, state: FSMContext) -> None:
     code = message.text.strip().upper()
-    test = await queries.get_test_by_code(code)
+    test = await queries.get_test_by_code(code, message.from_user.id)
 
     if not test:
         await message.answer("❌ Тест із таким кодом не знайдено. Перевірте код та спробуйте ще раз:")
@@ -142,7 +142,7 @@ async def process_access_code(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(StudentStates.browsing_tests, TestCallback.filter(F.action == "start"))
 async def test_preview(callback: CallbackQuery, callback_data: TestCallback, state: FSMContext) -> None:
-    test = await queries.get_test(callback_data.id)
+    test = await queries.get_test(callback_data.id, callback.from_user.id)
     if not test:
         await callback.answer("⚠️ Тест не знайдено.", show_alert=True)
         return
@@ -172,7 +172,7 @@ async def start_test(callback: CallbackQuery, callback_data: TestCallback, state
     if not user:
         return
 
-    test = await queries.get_test_with_questions(callback_data.id)
+    test = await queries.get_test_with_questions(callback_data.id, callback.from_user.id)
     if not test or not test.get("questions"):
         await callback.answer("⚠️ У цьому тесті немає питань.", show_alert=True)
         return
@@ -186,6 +186,7 @@ async def start_test(callback: CallbackQuery, callback_data: TestCallback, state
         questions=test["questions"],
         current_index=0,
         score=0,
+        show_answer_correctness=test.get("show_answer_correctness", True),
     )
 
     await callback.message.edit_text(
@@ -239,12 +240,17 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext) -> None:
 
     await queries.save_answer(data["session_id"], question_id, option_id, is_correct)
 
-    # Feedback to user
+    # Feedback to user (depends on show_answer_correctness setting)
+    show_answers = data.get("show_answer_correctness", True)
+    
     if is_correct:
         feedback = "✅ *Правильно!*"
     else:
-        correct_text = correct_opt["text"] if correct_opt else "—"
-        feedback = f"❌ *Неправильно.*\nПравильна відповідь: _{correct_text}_"
+        if show_answers:
+            correct_text = correct_opt["text"] if correct_opt else "—"
+            feedback = f"❌ *Неправильно.*\nПравильна відповідь: _{correct_text}_"
+        else:
+            feedback = "❌ *Неправильно!*"
 
     await callback.message.edit_reply_markup()  # remove buttons
     await callback.message.answer(feedback, parse_mode="Markdown")
@@ -287,7 +293,7 @@ async def my_results(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
 
-    sessions = await queries.get_student_sessions(user["id"])
+    sessions = await queries.get_student_sessions(user["id"], message.from_user.id)
 
     if not sessions:
         await message.answer("📭 Ви ще не проходили жодного тесту.")
