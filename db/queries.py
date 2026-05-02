@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from supabase import AsyncClient
+from supabase.lib.client_options import AsyncClientOptions
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 supabase_admin: AsyncClient = None  # Admin client (bypasses RLS)
 supabase_url: str = None
 jwt_secret: str = None
+supabase_anon_key: str = os.getenv("SUPABASE_ANON_KEY") or os.getenv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY")
 
 
 def init(admin_client: AsyncClient, jwt_secret_key: str, supabase_url_str: str) -> None:
@@ -51,7 +53,11 @@ def _create_jwt_for_user(telegram_id: int) -> str:
 def _get_rls_client(telegram_id: int) -> AsyncClient:
     """Creates a Supabase client with JWT for RLS enforcement."""
     token = _create_jwt_for_user(telegram_id)
-    return AsyncClient(supabase_url, token)
+    options = AsyncClientOptions(headers={
+        "Authorization": f"Bearer {token}",
+        "apikey": supabase_anon_key,
+    })
+    return AsyncClient(supabase_url, supabase_anon_key, options=options)
 
 
 # ── Users ──────────────────────────────────────────────────────────────────
