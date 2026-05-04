@@ -59,14 +59,14 @@ dp.include_router(student.router)
 
 
 async def init_supabase() -> AsyncClient:
-    """Initialize Supabase admin client with JWT support for RLS."""
-    # Admin client uses SERVICE_ROLE_KEY to bypass RLS
+    """Initialize Supabase admin client."""
+    # Admin client uses SERVICE_ROLE_KEY to bypass RLS and access all data
     admin_client = await create_async_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
     
-    # Initialize queries with JWT secret for RLS enforcement
+    # Initialize queries module with admin client
     queries.init(admin_client, SUPABASE_JWT_SECRET, SUPABASE_URL)
     
-    logger.info("✅ Supabase initialized with JWT/RLS support")
+    logger.info("✅ Supabase admin client initialized")
     return admin_client
 
 

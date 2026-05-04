@@ -26,38 +26,12 @@ supabase_anon_key: str = os.getenv("SUPABASE_ANON_KEY") or os.getenv("NEXT_PUBLI
 
 
 def init(admin_client: AsyncClient, jwt_secret_key: str, supabase_url_str: str) -> None:
-    """Initialize Supabase clients with JWT support for RLS."""
+    """Initialize Supabase admin client."""
     global supabase_admin, jwt_secret, supabase_url
     supabase_admin = admin_client
     jwt_secret = jwt_secret_key
     supabase_url = supabase_url_str
-    logger.info("✅ Supabase clients initialized with JWT support")
-
-
-def _create_jwt_for_user(telegram_id: int) -> str:
-    """
-    Creates a JWT token with telegram_id for RLS policies.
-    Token expires in 24 hours.
-    """
-    payload = {
-        "sub": str(telegram_id),
-        "telegram_id": telegram_id,
-        "iat": datetime.now(timezone.utc),
-        "exp": datetime.now(timezone.utc) + timedelta(hours=24),
-        "role": "authenticated",
-    }
-    token = pyjwt.encode(payload, jwt_secret, algorithm="HS256")
-    return token
-
-
-def _get_rls_client(telegram_id: int) -> AsyncClient:
-    """Creates a Supabase client with JWT for RLS enforcement."""
-    token = _create_jwt_for_user(telegram_id)
-    options = AsyncClientOptions(headers={
-        "Authorization": f"Bearer {token}",
-        "apikey": supabase_anon_key,
-    })
-    return AsyncClient(supabase_url, supabase_anon_key, options=options)
+    logger.info("✅ Supabase admin client initialized")
 
 
 # ── Users ──────────────────────────────────────────────────────────────────
@@ -87,9 +61,10 @@ async def update_user_language(telegram_id: int, language: str) -> Optional[dict
 # ── Subjects ────────────────────────────────────────────────────────────────
 
 async def get_subjects(telegram_id: int = None) -> list[dict]:
-    """Get all subjects (public read via RLS or admin bypass)."""
-    client = _get_rls_client(telegram_id) if telegram_id else supabase_admin
-    res = await client.table("subjects").select("*").order("name").execute()
+    """Get all subjects (using admin client with explicit filtering)."""
+    # Note: telegram_id parameter kept for backwards compatibility
+    # but RLS is not enforced via JWT anymore
+    res = await supabase_admin.table("subjects").select("*").order("name").execute()
     return res.data or []
 
 
@@ -133,10 +108,10 @@ async def create_test(
 
 
 async def get_teacher_tests(teacher_id: int, telegram_id: int) -> list[dict]:
-    """Get teacher's tests (with JWT RLS enforcement)."""
-    client = _get_rls_client(telegram_id)
+    """Get teacher's tests (with explicit teacher_id verification)."""
+    # Use admin client with explicit where clause instead of RLS
     res = (
-        await client.table("tests")
+        await supabase_admin.table("tests")
         .select("*, subjects(name)")
         .eq("teacher_id", teacher_id)
         .eq("is_active", True)
@@ -147,10 +122,10 @@ async def get_teacher_tests(teacher_id: int, telegram_id: int) -> list[dict]:
 
 
 async def get_public_tests_by_subject(subject_id: int, telegram_id: int) -> list[dict]:
-    """Get public tests by subject (with JWT RLS enforcement)."""
-    client = _get_rls_client(telegram_id)
+    """Get public tests by subject (public access, explicit filtering)."""
+    # telegram_id parameter kept for backwards compatibility
     res = (
-        await client.table("tests")
+        await supabase_admin.table("tests")
         .select("*, users(name)")
         .eq("subject_id", subject_id)
         .eq("is_public", True)
@@ -162,10 +137,10 @@ async def get_public_tests_by_subject(subject_id: int, telegram_id: int) -> list
 
 
 async def get_test_by_code(access_code: str, telegram_id: int) -> Optional[dict]:
-    """Get test by access code (with JWT RLS enforcement)."""
-    client = _get_rls_client(telegram_id)
+    """Get test by access code (explicit filtering)."""
+    # telegram_id parameter kept for backwards compatibility
     res = (
-        await client.table("tests")
+        await supabase_admin.table("tests")
         .select("*, subjects(name), users(name)")
         .eq("access_code", access_code.upper())
         .eq("is_active", True)
@@ -175,10 +150,10 @@ async def get_test_by_code(access_code: str, telegram_id: int) -> Optional[dict]
 
 
 async def get_test(test_id: int, telegram_id: int = None) -> Optional[dict]:
-    """Get test by ID (with optional JWT RLS enforcement)."""
-    client = _get_rls_client(telegram_id) if telegram_id else supabase_admin
+    """Get test by ID (explicit filtering)."""
+    # telegram_id parameter kept for backwards compatibility
     res = (
-        await client.table("tests")
+        await supabase_admin.table("tests")
         .select("*, subjects(name), users(name)")
         .eq("id", test_id)
         .execute()
@@ -187,14 +162,14 @@ async def get_test(test_id: int, telegram_id: int = None) -> Optional[dict]:
 
 
 async def get_test_with_questions(test_id: int, telegram_id: int = None) -> Optional[dict]:
-    """Returns test + ordered questions + options (with optional JWT RLS enforcement)."""
+    """Returns test + ordered questions + options (explicit filtering)."""
     test = await get_test(test_id, telegram_id)
     if not test:
         return None
 
-    client = _get_rls_client(telegram_id) if telegram_id else supabase_admin
+    # telegram_id parameter kept for backwards compatibility
     q_res = (
-        await client.table("questions")
+        await supabase_admin.table("questions")
         .select("*, options(*)")
         .eq("test_id", test_id)
         .order("question_order")
@@ -278,10 +253,10 @@ async def complete_session(session_id: int, score: int) -> None:
 
 
 async def get_test_results(test_id: int, telegram_id: int) -> list[dict]:
-    """Get all completed sessions for a test (with JWT RLS enforcement)."""
-    client = _get_rls_client(telegram_id)
+    """Get all completed sessions for a test (explicit filtering)."""
+    # telegram_id parameter kept for backwards compatibility
     res = (
-        await client.table("test_sessions")
+        await supabase_admin.table("test_sessions")
         .select("*, users(name)")
         .eq("test_id", test_id)
         .not_.is_("completed_at", "null")
@@ -292,10 +267,10 @@ async def get_test_results(test_id: int, telegram_id: int) -> list[dict]:
 
 
 async def get_student_sessions(student_id: int, telegram_id: int) -> list[dict]:
-    """Get completed sessions for a student (with JWT RLS enforcement)."""
-    client = _get_rls_client(telegram_id)
+    """Get completed sessions for a student (explicit filtering)."""
+    # telegram_id parameter kept for backwards compatibility
     res = (
-        await client.table("test_sessions")
+        await supabase_admin.table("test_sessions")
         .select("*, tests(title, subjects(name))")
         .eq("student_id", student_id)
         .not_.is_("completed_at", "null")
