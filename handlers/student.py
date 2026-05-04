@@ -140,7 +140,7 @@ async def process_access_code(message: Message, state: FSMContext) -> None:
 #  Test preview (from public list)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.callback_query(StudentStates.browsing_tests, TestCallback.filter(F.action == "start"))
+@router.callback_query(StudentStates.browsing_tests, TestCallback.filter(F.action == "preview"))
 async def test_preview(callback: CallbackQuery, callback_data: TestCallback, state: FSMContext) -> None:
     test = await queries.get_test(callback_data.id, callback.from_user.id)
     if not test:

@@ -79,7 +79,7 @@ def tests_keyboard(tests: list[dict]) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(
             text=f"📝 {t['title']}",
-            callback_data=TestCallback(id=t["id"], action="start").pack()
+            callback_data=TestCallback(id=t["id"], action="preview").pack()
         )]
         for t in tests
     ]
