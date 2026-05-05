@@ -93,6 +93,7 @@ async def create_test(
     access_code: Optional[str],
     description: Optional[str],
     show_answer_correctness: bool = True,
+    max_attempts: Optional[int] = None,
 ) -> dict:
     """Create test (admin insert, bypasses RLS)."""
     res = await supabase_admin.table("tests").insert({
@@ -103,6 +104,7 @@ async def create_test(
         "access_code": access_code,
         "description": description,
         "show_answer_correctness": show_answer_correctness,
+        "max_attempts": max_attempts,
     }).execute()
     return res.data[0]
 
@@ -286,6 +288,19 @@ async def get_question_count(test_id: int) -> int:
         await supabase_admin.table("questions")
         .select("id", count="exact")
         .eq("test_id", test_id)
+        .execute()
+    )
+    return res.count or 0
+
+
+async def get_student_attempt_count(test_id: int, student_id: int) -> int:
+    """Get number of completed attempts for a student on a test (admin read)."""
+    res = (
+        await supabase_admin.table("test_sessions")
+        .select("id", count="exact")
+        .eq("test_id", test_id)
+        .eq("student_id", student_id)
+        .not_.is_("completed_at", "null")
         .execute()
     )
     return res.count or 0

@@ -14,6 +14,8 @@ class TeacherStates(StatesGroup):
     creating_subject = State()
     entering_description = State()
     choosing_answer_visibility = State()
+    choosing_attempts = State()
+    choosing_limited_attempts = State()
     choosing_visibility = State()
 
     # ── Adding questions ────────────────────────────────
@@ -22,8 +24,7 @@ class TeacherStates(StatesGroup):
     marking_correct = State()       # picking correct option via inline btn
 
     # ── Managing existing tests ─────────────────────────
-    viewing_my_tests = State()
-    viewing_results = State()
+    viewing_tests_and_results = State()
 
 
 class StudentStates(StatesGroup):

@@ -26,6 +26,14 @@ class AnswerVisibilityCallback(CallbackData, prefix="ansvis"):
     value: str  # "yes" | "no"
 
 
+class AttemptsCallback(CallbackData, prefix="att"):
+    value: str  # "unlimited" | "limited"
+
+
+class LimitedAttemptsCallback(CallbackData, prefix="liatt"):
+    count: int  # 1, 2, 3, etc.
+
+
 class OptionCallback(CallbackData, prefix="opt"):
     """Used when marking the correct answer."""
     index: int   # 0-based index in options list

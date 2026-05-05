@@ -1,5 +1,12 @@
 -- Sample Tests for the Quiz Bot
--- This script adds sample tests for different subjects
+-- This script adds sample tests for different subjects with various attempt limits
+--
+-- Attempt limits:
+-- - Geography: Unlimited attempts (NULL)
+-- - History: 3 attempts
+-- - Astronomy: 1 attempt
+-- - English: 5 attempts
+-- - German: 2 attempts
 
 -- Note: You need to have created at least one teacher user first
 -- The teacher_id below should be replaced with an actual teacher's ID
@@ -14,17 +21,18 @@ INSERT INTO subjects (name) VALUES
 ON CONFLICT (name) DO NOTHING;
 
 -- ════════════════════════════════════════════════════════════════════════════
--- GEOGRAPHY TEST
+-- GEOGRAPHY TEST - UNLIMITED ATTEMPTS
 -- ════════════════════════════════════════════════════════════════════════════
 
-INSERT INTO tests (title, subject_id, teacher_id, is_public, description, show_answer_correctness)
+INSERT INTO tests (title, subject_id, teacher_id, is_public, description, show_answer_correctness, max_attempts)
 VALUES (
     'Столиці світу',
     (SELECT id FROM subjects WHERE name = 'Географія'),
     778034991,
     true,
     'Тест на знання столиць різних країн світу',
-    true
+    true,
+    NULL  -- Необмежено спроб
 ) RETURNING id AS test_id;
 
 -- Questions for Geography test
@@ -64,17 +72,18 @@ INSERT INTO options (question_id, text, is_correct) VALUES
 ((SELECT id FROM questions WHERE text = 'Яка столиця Іспанії?'), 'Севілья', false);
 
 -- ════════════════════════════════════════════════════════════════════════════
--- HISTORY TEST
+-- HISTORY TEST - 3 ATTEMPTS
 -- ════════════════════════════════════════════════════════════════════════════
 
-INSERT INTO tests (title, subject_id, teacher_id, is_public, description, show_answer_correctness)
+INSERT INTO tests (title, subject_id, teacher_id, is_public, description, show_answer_correctness, max_attempts)
 VALUES (
     'Історія України',
     (SELECT id FROM subjects WHERE name = 'Історія'),
     778034991,
     true,
     'Базові знання з історії України',
-    true
+    true,
+    3  -- 3 спроби
 );
 
 -- Questions for History test
@@ -114,17 +123,18 @@ INSERT INTO options (question_id, text, is_correct) VALUES
 ((SELECT id FROM questions WHERE text = 'Яка битва відбулася у 1240 році?'), 'Битва під Полтавою', false);
 
 -- ════════════════════════════════════════════════════════════════════════════
--- ASTRONOMY TEST
+-- ASTRONOMY TEST - 1 ATTEMPT
 -- ════════════════════════════════════════════════════════════════════════════
 
-INSERT INTO tests (title, subject_id, teacher_id, is_public, description, show_answer_correctness)
+INSERT INTO tests (title, subject_id, teacher_id, is_public, description, show_answer_correctness, max_attempts)
 VALUES (
     'Планети Сонячної системи',
     (SELECT id FROM subjects WHERE name = 'Астрономія'),
     778034991,
     true,
     'Базовий тест про планети нашої системи',
-    true
+    true,
+    1  -- 1 спроба
 );
 
 -- Questions for Astronomy test
@@ -164,17 +174,18 @@ INSERT INTO options (question_id, text, is_correct) VALUES
 ((SELECT id FROM questions WHERE text = 'Яка планета відома як "Червона планета"?'), 'Сатурн', false);
 
 -- ════════════════════════════════════════════════════════════════════════════
--- ENGLISH TEST
+-- ENGLISH TEST - 5 ATTEMPTS
 -- ════════════════════════════════════════════════════════════════════════════
 
-INSERT INTO tests (title, subject_id, teacher_id, is_public, description, show_answer_correctness)
+INSERT INTO tests (title, subject_id, teacher_id, is_public, description, show_answer_correctness, max_attempts)
 VALUES (
     'English Grammar Basics',
     (SELECT id FROM subjects WHERE name = 'Англійська мова'),
     778034991,
     true,
     'Basic English grammar test for beginners',
-    true
+    true,
+    5  -- 5 спроб
 );
 
 -- Questions for English test
@@ -214,17 +225,18 @@ INSERT INTO options (question_id, text, is_correct) VALUES
 ((SELECT id FROM questions WHERE text = 'Which word is a noun: run, quickly, house, beautiful?'), 'beautiful', false);
 
 -- ════════════════════════════════════════════════════════════════════════════
--- GERMAN TEST
+-- GERMAN TEST - 2 ATTEMPTS
 -- ════════════════════════════════════════════════════════════════════════════
 
-INSERT INTO tests (title, subject_id, teacher_id, is_public, description, show_answer_correctness)
+INSERT INTO tests (title, subject_id, teacher_id, is_public, description, show_answer_correctness, max_attempts)
 VALUES (
     'Grundlagen der deutschen Sprache',
     (SELECT id FROM subjects WHERE name = 'Німецька мова'),
     778034991,
     true,
     'Grundlegender Deutschtest für Anfänger',
-    true
+    true,
+    2  -- 2 спроби
 );
 
 -- Questions for German test

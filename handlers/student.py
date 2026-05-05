@@ -142,6 +142,10 @@ async def process_access_code(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(StudentStates.browsing_tests, TestCallback.filter(F.action == "preview"))
 async def test_preview(callback: CallbackQuery, callback_data: TestCallback, state: FSMContext) -> None:
+    user = await _require_student(callback)
+    if not user:
+        return
+
     test = await queries.get_test(callback_data.id, callback.from_user.id)
     if not test:
         await callback.answer("⚠️ Тест не знайдено.", show_alert=True)
@@ -150,10 +154,25 @@ async def test_preview(callback: CallbackQuery, callback_data: TestCallback, sta
     q_count = await queries.get_question_count(test["id"])
     teacher_name = test["users"]["name"] if test.get("users") else "—"
 
+    # Build attempts info
+    attempts_info = ""
+    if test.get("max_attempts"):
+        attempt_count = await queries.get_student_attempt_count(test["id"], user["id"])
+        remaining = test["max_attempts"] - attempt_count
+        attempts_text = f"Спроб залишилось: {remaining}/{test['max_attempts']}"
+        if remaining <= 0:
+            attempts_text = f"❌ Спроби вичерпані ({test['max_attempts']}/{test['max_attempts']})"
+        else:
+            attempts_text = f"⏱️ {attempts_text}"
+        attempts_info = f"{attempts_text}\n"
+    else:
+        attempts_info = "♾️ Спроби: необмежено\n"
+
     await callback.message.edit_text(
         f"📝 *{test['title']}*\n"
         f"👨‍🏫 Вчитель: {teacher_name}\n"
         f"❓ Питань: {q_count}\n"
+        f"{attempts_info}"
         + (f"📄 {test['description']}\n" if test.get("description") else "")
         + "\nНатисніть *▶️ Розпочати тест*, коли будете готові.",
         reply_markup=start_test_keyboard(test["id"]),
@@ -176,6 +195,17 @@ async def start_test(callback: CallbackQuery, callback_data: TestCallback, state
     if not test or not test.get("questions"):
         await callback.answer("⚠️ У цьому тесті немає питань.", show_alert=True)
         return
+
+    # Check attempt limit
+    if test.get("max_attempts"):
+        attempt_count = await queries.get_student_attempt_count(test["id"], user["id"])
+        if attempt_count >= test["max_attempts"]:
+            attempts_text = "1 спроба" if test["max_attempts"] == 1 else f"{test['max_attempts']} спроб"
+            await callback.answer(
+                f"❌ Ви вичерпали всі спроби ({attempts_text}) для цього тесту.",
+                show_alert=True
+            )
+            return
 
     session = await queries.create_session(test["id"], user["id"], len(test["questions"]))
 

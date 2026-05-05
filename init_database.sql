@@ -77,6 +77,7 @@ CREATE TABLE tests (
     access_code              TEXT UNIQUE,                  -- only for private tests
     is_active                BOOLEAN DEFAULT TRUE,
     show_answer_correctness  BOOLEAN DEFAULT TRUE,         -- teacher decides if answers are shown
+    max_attempts             INTEGER,                      -- NULL = unlimited attempts
     created_at               TIMESTAMPTZ DEFAULT NOW()
 );
 

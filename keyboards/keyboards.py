@@ -7,7 +7,7 @@ from .callbacks import (
     RoleCallback, LangCallback, SubjectCallback, TestCallback,
     VisibilityCallback, OptionCallback, QuestionNextCallback,
     DoneOptionsCallback, BackCallback, NewSubjectCallback,
-    AnswerVisibilityCallback,
+    AnswerVisibilityCallback, AttemptsCallback, LimitedAttemptsCallback,
 )
 
 
@@ -38,7 +38,7 @@ def teacher_menu(lang: str = "uk") -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=i18n("menu_create_test", lang))],
-            [KeyboardButton(text=i18n("menu_my_tests", lang)), KeyboardButton(text=i18n("menu_results", lang))],
+            [KeyboardButton(text="📋 Мої тести та результати")],
         ],
         resize_keyboard=True,
     )
@@ -125,6 +125,31 @@ def answer_visibility_keyboard() -> InlineKeyboardMarkup:
                              callback_data=AnswerVisibilityCallback(value="yes").pack()),
         InlineKeyboardButton(text="❌ Приховувати",
                              callback_data=AnswerVisibilityCallback(value="no").pack()),
+    ]])
+
+# ── Attempts choice ──────────────────────────────────────────────────────────
+
+def attempts_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="♾️ Необмежено",
+                             callback_data=AttemptsCallback(value="unlimited").pack()),
+        InlineKeyboardButton(text="⏱️ Обмежити спроби",
+                             callback_data=AttemptsCallback(value="limited").pack()),
+    ]])
+
+def limited_attempts_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="1️⃣ 1 спроба",
+                             callback_data=LimitedAttemptsCallback(count=1).pack()),
+        InlineKeyboardButton(text="2️⃣ 2 спроби",
+                             callback_data=LimitedAttemptsCallback(count=2).pack()),
+        InlineKeyboardButton(text="3️⃣ 3 спроби",
+                             callback_data=LimitedAttemptsCallback(count=3).pack()),
+    ], [
+        InlineKeyboardButton(text="5️⃣ 5 спроб",
+                             callback_data=LimitedAttemptsCallback(count=5).pack()),
+        InlineKeyboardButton(text="🔟 10 спроб",
+                             callback_data=LimitedAttemptsCallback(count=10).pack()),
     ]])
 
 # ── Options input during question creation ──────────────────────────────────

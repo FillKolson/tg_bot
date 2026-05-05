@@ -23,7 +23,7 @@ UK = {
     "welcome_back": "👋 З поверненням, *{name}*!\nРоль: _{role}_",
     
     # ── Help ────────────────────────────────────────
-    "help_teacher": "📖 *Довідка для вчителя*\n\n➕ *Створити тест* — запуск майстра створення тесту\n📋 *Мої тести* — перегляд усіх ваших тестів\n📊 *Результати* — результати студентів по тесту\n\nПри створенні тесту можна обрати:\n• *Публічний* — студенти знайдуть через меню «Предмети»\n• *Приватний* — доступний лише за унікальним кодом\n\n/cancel — скасувати поточну дію",
+    "help_teacher": "📖 *Довідка для вчителя*\n\n➕ *Створити тест* — запуск майстра створення тесту\n📋 *Мої тести та результати* — перегляд тестів та результатів студентів\n\nПри створенні тесту можна обрати:\n• *Публічний* — студенти знайдуть через меню «Предмети»\n• *Приватний* — доступний лише за унікальним кодом\n• *Обмежені спроби* — контроль кількості повторних проходжень\n\n/cancel — скасувати поточну дію",
     "help_student": "📖 *Довідка для студента*\n\n📚 *Предмети* — перегляд публічних тестів по предметах\n🔑 *Ввести код* — доступ до приватного тесту за кодом\n📈 *Мої результати* — ваша статистика\n\n/cancel — скасувати поточну дію",
     
     # ── Teacher: Create test ────────────────────────
@@ -152,7 +152,7 @@ EN = {
     "welcome_back": "👋 Welcome back, *{name}*!\nRole: _{role}_",
     
     # ── Help ────────────────────────────────────────
-    "help_teacher": "📖 *Teacher Help*\n\n➕ *Create Test* — start test creation wizard\n📋 *My Tests* — view all your tests\n📊 *Results* — view student results\n\nWhen creating a test, you can choose:\n• *Public* — students will find it in the Subjects menu\n• *Private* — only accessible via unique code\n\n/cancel — cancel current action",
+    "help_teacher": "📖 *Teacher Help*\n\n➕ *Create Test* — start test creation wizard\n📋 *My Tests & Results* — view your tests and student results\n\nWhen creating a test, you can choose:\n• *Public* — students will find it in the Subjects menu\n• *Private* — only accessible via unique code\n• *Limited Attempts* — control how many times students can retake\n\n/cancel — cancel current action",
     "help_student": "📖 *Student Help*\n\n📚 *Subjects* — browse public tests by subject\n🔑 *Enter Code* — access private test via code\n📈 *My Results* — your statistics\n\n/cancel — cancel current action",
     
     # ── Teacher: Create test ────────────────────────
