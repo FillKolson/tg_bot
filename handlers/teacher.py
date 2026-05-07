@@ -1,10 +1,5 @@
 """
-Teacher flow
-============
-«Створити тест» → title → subject → description → visibility
-→ [generate access_code if private]
-→ question loop: question_text → options (text, text …) → mark_correct
-→ «Додати ще» | «Завершити»
+Teacher handlers - create tests, manage questions, view results.
 """
 import logging
 import random
@@ -21,12 +16,16 @@ from keyboards.callbacks import (
     QuestionNextCallback, DoneOptionsCallback, NewSubjectCallback,
     TestCallback, BackCallback, AnswerVisibilityCallback,
     AttemptsCallback, LimitedAttemptsCallback,
+    EditTestCallback, EditQuestionCallback, EditOptionCallback,
+    StatisticsCallback, ConfirmDeleteCallback,
 )
 from keyboards.keyboards import (
     teacher_menu, subjects_keyboard, visibility_keyboard,
     options_input_keyboard, correct_option_keyboard,
     question_next_keyboard, my_tests_keyboard, answer_visibility_keyboard,
     attempts_keyboard, limited_attempts_keyboard,
+    edit_test_menu_keyboard, edit_questions_list_keyboard, edit_options_list_keyboard,
+    statistics_keyboard, confirm_delete_keyboard, back_keyboard,
 )
 from states.states import TeacherStates
 
@@ -36,7 +35,7 @@ router = Router()
 MAX_OPTIONS = 4  # per question
 
 
-# ── Guard: only teachers ────────────────────────────────────────────────────
+# Auth check - reject non-teachers
 
 async def _require_teacher(message_or_cq) -> Optional[dict]:
     tid = (
@@ -55,7 +54,7 @@ async def _require_teacher(message_or_cq) -> Optional[dict]:
     return user
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
+# Helpers
 
 def _generate_code(length: int = 6) -> str:
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
@@ -68,9 +67,7 @@ def _question_summary(data: dict) -> str:
     return f"Питань збережено: {len(qs)}"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  STEP 1 — Enter title
-# ══════════════════════════════════════════════════════════════════════════════
+# Step 1 - Enter title
 
 @router.message(F.text == "➕ Створити тест")
 async def create_test_start(message: Message, state: FSMContext) -> None:
@@ -114,9 +111,7 @@ async def enter_title(message: Message, state: FSMContext) -> None:
         await state.set_state(TeacherStates.creating_subject)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  STEP 2 — Select or create subject
-# ══════════════════════════════════════════════════════════════════════════════
+# Step 2 - Select or create subject
 
 @router.callback_query(TeacherStates.selecting_subject, SubjectCallback.filter())
 async def select_subject(callback: CallbackQuery, callback_data: SubjectCallback, state: FSMContext) -> None:
@@ -154,9 +149,7 @@ async def create_new_subject(message: Message, state: FSMContext) -> None:
     await state.set_state(TeacherStates.entering_description)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  STEP 3 — Description
-# ══════════════════════════════════════════════════════════════════════════════
+# Step 3 - Description
 
 @router.message(TeacherStates.entering_description, F.text)
 async def enter_description(message: Message, state: FSMContext) -> None:
@@ -174,9 +167,7 @@ async def enter_description(message: Message, state: FSMContext) -> None:
     await state.set_state(TeacherStates.choosing_answer_visibility)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  STEP 4 — Answer visibility
-# ══════════════════════════════════════════════════════════════════════════════
+# Step 4 - Answer visibility
 
 @router.callback_query(TeacherStates.choosing_answer_visibility, AnswerVisibilityCallback.filter())
 async def choose_answer_visibility(callback: CallbackQuery, callback_data: AnswerVisibilityCallback, state: FSMContext) -> None:
@@ -194,9 +185,7 @@ async def choose_answer_visibility(callback: CallbackQuery, callback_data: Answe
     await callback.answer()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  STEP 5 — Attempts configuration
-# ══════════════════════════════════════════════════════════════════════════════
+# Step 5 - Attempts configuration
 
 @router.callback_query(TeacherStates.choosing_attempts, AttemptsCallback.filter())
 async def choose_attempts(callback: CallbackQuery, callback_data: AttemptsCallback, state: FSMContext) -> None:
@@ -235,9 +224,7 @@ async def choose_limited_attempts(callback: CallbackQuery, callback_data: Limite
     await callback.answer()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  STEP 6 — Visibility
-# ══════════════════════════════════════════════════════════════════════════════
+# Step 6 - Visibility
 
 @router.callback_query(TeacherStates.choosing_visibility, VisibilityCallback.filter())
 async def choose_visibility(callback: CallbackQuery, callback_data: VisibilityCallback, state: FSMContext) -> None:
@@ -264,9 +251,7 @@ async def choose_visibility(callback: CallbackQuery, callback_data: VisibilityCa
     await callback.answer()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  Questions loop — question text
-# ══════════════════════════════════════════════════════════════════════════════
+# Questions loop - question text
 
 @router.message(TeacherStates.entering_question_text, F.text)
 async def enter_question_text(message: Message, state: FSMContext) -> None:
@@ -283,9 +268,7 @@ async def enter_question_text(message: Message, state: FSMContext) -> None:
     await state.set_state(TeacherStates.entering_option)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  Questions loop — collecting options
-# ══════════════════════════════════════════════════════════════════════════════
+# Questions loop - collecting options
 
 @router.message(TeacherStates.entering_option, F.text)
 async def enter_option(message: Message, state: FSMContext) -> None:
@@ -341,9 +324,7 @@ async def done_options(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  Questions loop — mark correct answer
-# ══════════════════════════════════════════════════════════════════════════════
+# Questions loop - mark correct answer
 
 @router.callback_query(TeacherStates.marking_correct, OptionCallback.filter())
 async def mark_correct(callback: CallbackQuery, callback_data: OptionCallback, state: FSMContext) -> None:
@@ -377,9 +358,7 @@ async def mark_correct(callback: CallbackQuery, callback_data: OptionCallback, s
     await callback.answer("Збережено!")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  Questions loop — continue or finish
-# ══════════════════════════════════════════════════════════════════════════════
+# Questions loop - continue or finish
 
 @router.callback_query(TeacherStates.marking_correct, QuestionNextCallback.filter())
 @router.callback_query(QuestionNextCallback.filter())
@@ -444,9 +423,7 @@ async def _finish_test(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  Tests and Results (merged from two buttons)
-# ══════════════════════════════════════════════════════════════════════════════
+# Tests and Results
 
 @router.message(F.text == "📋 Мої тести")
 @router.message(F.text == "📊 Результати")
@@ -477,6 +454,67 @@ async def view_tests_and_results(message: Message, state: FSMContext) -> None:
     await state.set_state(TeacherStates.viewing_tests_and_results)
 
 
+@router.message(F.text == "📊 Статистика")
+async def view_statistics(message: Message, state: FSMContext) -> None:
+    """Show statistics menu."""
+    user = await _require_teacher(message)
+    if not user:
+        return
+    await state.clear()
+    
+    await message.answer(
+        "📊 *Статистика по предметах*\n\n"
+        "Перегляньте середній бал та кількість тестів по кожному предмету:",
+        reply_markup=statistics_keyboard(),
+        parse_mode="Markdown",
+    )
+    await state.set_state(TeacherStates.viewing_statistics)
+
+
+@router.callback_query(TeacherStates.viewing_statistics, StatisticsCallback.filter())
+async def show_statistics(callback: CallbackQuery, callback_data: StatisticsCallback, state: FSMContext) -> None:
+    """Display subject statistics."""
+    user = await queries.get_user(callback.from_user.id)
+    stats = await queries.get_subject_statistics(user["id"])
+    
+    if not stats:
+        await callback.message.edit_text(
+            "📊 *Статистика по предметах*\n\n"
+            "У вас ще немає завершених тестів для статистики.",
+            reply_markup=back_keyboard("teacher_menu"),
+            parse_mode="Markdown",
+        )
+        await callback.answer()
+        return
+    
+    text = "📊 *Статистика по предметах*\n\n"
+    for stat in stats:
+        text += (
+            f"📖 *{stat['subject_name']}*\n"
+            f"   Тестів: {stat['test_count']}\n"
+            f"   Проходжень: {stat['total_sessions']}\n"
+            f"   Середній бал: {stat['average_score']}%\n\n"
+        )
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=back_keyboard("teacher_menu"),
+        parse_mode="Markdown",
+    )
+    await callback.answer()
+
+
+@router.callback_query(TeacherStates.viewing_statistics, BackCallback.filter())
+async def back_from_statistics(callback: CallbackQuery, state: FSMContext) -> None:
+    """Return to teacher menu from statistics."""
+    await callback.message.edit_text(
+        "Оберіть дію:",
+        reply_markup=teacher_menu(),
+    )
+    await state.clear()
+    await callback.answer()
+
+
 @router.callback_query(TeacherStates.viewing_tests_and_results, TestCallback.filter())
 async def handle_test_action(callback: CallbackQuery, callback_data: TestCallback, state: FSMContext) -> None:
     if callback_data.action == "results":
@@ -499,7 +537,7 @@ async def _show_results(callback: CallbackQuery, test_id: int, state: FSMContext
 
     lines = [f"📊 *Результати: {test['title']}*\n"]
     for i, s in enumerate(sessions, 1):
-        pct = round(s["score"] / s["total_questions"] * 100) if s["total_questions"] else 0
+        pct = round(s.get("percentage", 0))
         bar = _progress_bar(pct)
         name = s["users"]["name"] if s.get("users") else "—"
         lines.append(f"{i}. *{name}*\n   {bar} {pct}% ({s['score']}/{s['total_questions']})\n")
@@ -508,21 +546,75 @@ async def _show_results(callback: CallbackQuery, test_id: int, state: FSMContext
 
 
 async def _delete_test(callback: CallbackQuery, test_id: int, state: FSMContext) -> None:
-    user = await queries.get_user(callback.from_user.id)
-    deleted = await queries.deactivate_test(test_id, user["id"])
-    if deleted:
-        await callback.answer("🗑 Тест видалено.", show_alert=True)
-        # Refresh list
-        tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
-        if tests:
-            await callback.message.edit_reply_markup(reply_markup=my_tests_keyboard(tests))
+    """Show delete confirmation."""
+    test = await queries.get_test(test_id)
+    await callback.message.edit_text(
+        f"🗑 *Видалення тесту*\n\n"
+        f"Тест: *{test['title']}*\n"
+        f"Предмет: {test['subjects']['name']}\n\n"
+        f"⚠️ Цю дію неможливо скасувати. Всі результати будуть втрачені.\n\n"
+        f"Видалити тест?",
+        reply_markup=confirm_delete_keyboard(test_id),
+        parse_mode="Markdown",
+    )
+    await state.update_data(deleting_test_id=test_id)
+    await state.set_state(TeacherStates.confirming_delete_test)
+
+
+@router.callback_query(TeacherStates.confirming_delete_test, ConfirmDeleteCallback.filter())
+async def confirm_delete_action(callback: CallbackQuery, callback_data: ConfirmDeleteCallback, state: FSMContext) -> None:
+    """Handle delete confirmation."""
+    data = await state.get_data()
+    test_id = data.get("deleting_test_id")
+    
+    if not test_id:
+        await callback.answer("⚠️ Помилка: тест не знайдено.", show_alert=True)
+        return
+    
+    if callback_data.action == "yes":
+        user = await queries.get_user(callback.from_user.id)
+        deleted = await queries.deactivate_test(test_id, user["id"])
+        if deleted:
+            await callback.message.edit_text(
+                "✅ Тест успішно видалено.",
+                reply_markup=teacher_menu(),
+            )
+            await callback.answer("🗑 Тест видалено.")
         else:
-            await callback.message.edit_text("📭 Тестів більше немає.")
+            await callback.message.edit_text(
+                "⚠️ Помилка видалення тесту.",
+                reply_markup=teacher_menu(),
+            )
+            await callback.answer("⚠️ Помилка.")
     else:
-        await callback.answer("⚠️ Помилка видалення.", show_alert=True)
+        # Cancel deletion
+        user = await queries.get_user(callback.from_user.id)
+        tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
+        await callback.message.edit_text(
+            f"📋 *Ваші тести* ({len(tests)}):",
+            reply_markup=my_tests_keyboard(tests),
+            parse_mode="Markdown",
+        )
+        await callback.answer("❌ Скасовано.")
+    
+    await state.clear()
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
+@router.callback_query(TeacherStates.confirming_delete_test, BackCallback.filter())
+async def back_from_delete_confirmation(callback: CallbackQuery, state: FSMContext) -> None:
+    """Return to tests list from delete confirmation."""
+    user = await queries.get_user(callback.from_user.id)
+    tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
+    await callback.message.edit_text(
+        f"📋 *Ваші тести* ({len(tests)}):",
+        reply_markup=my_tests_keyboard(tests),
+        parse_mode="Markdown",
+    )
+    await state.clear()
+    await callback.answer()
+
+
+# Helpers
 
 def _options_list(opts: list[str]) -> str:
     return "📋 Варіанти:\n" + "\n".join(f"  {i + 1}. {o}" for i, o in enumerate(opts))
@@ -531,3 +623,368 @@ def _options_list(opts: list[str]) -> str:
 def _progress_bar(pct: int, length: int = 10) -> str:
     filled = round(pct / 100 * length)
     return "█" * filled + "░" * (length - filled)
+
+
+# Edit test
+
+@router.callback_query(EditTestCallback.filter(F.action == "menu"))
+async def edit_test_menu(callback: CallbackQuery, callback_data: EditTestCallback, state: FSMContext) -> None:
+    """Open edit test menu."""
+    user = await _require_teacher(callback)
+    if not user:
+        return
+    
+    test = await queries.get_test(callback_data.id)
+    if not test or test["teacher_id"] != user["id"]:
+        await callback.answer("⛔ Ви не є автором цього тесту.", show_alert=True)
+        return
+    
+    badge = "🌐" if test["is_public"] else "🔒"
+    vis_text = "Публічний" if test["is_public"] else "Приватний"
+    att_text = f"{test['max_attempts']} спроб" if test['max_attempts'] else "Необмежено"
+    
+    await callback.message.edit_text(
+        f"✏️ *Редагування тесту*\n\n"
+        f"📝 Назва: *{test['title']}*\n"
+        f"🔍 Видимість: {badge} {vis_text}\n"
+        f"⏱️ Спроби: {att_text}\n\n"
+        "Оберіть що редагувати:",
+        reply_markup=edit_test_menu_keyboard(callback_data.id),
+        parse_mode="Markdown",
+    )
+    await state.set_state(TeacherStates.editing_test)
+    await callback.answer()
+
+
+@router.callback_query(TeacherStates.editing_test, EditTestCallback.filter(F.action == "title"))
+async def edit_test_title_prompt(callback: CallbackQuery, callback_data: EditTestCallback, state: FSMContext) -> None:
+    """Ask for new title."""
+    test = await queries.get_test(callback_data.id)
+    await callback.message.edit_text(
+        f"✏️ Поточна назва: *{test['title']}*\n\n"
+        "Введіть нову назву:",
+        reply_markup=back_keyboard("edit_menu"),
+        parse_mode="Markdown",
+    )
+    await state.update_data(editing_test_id=callback_data.id)
+    await state.set_state(TeacherStates.editing_test_title)
+    await callback.answer()
+
+
+@router.message(TeacherStates.editing_test_title, F.text)
+async def edit_test_title_save(message: Message, state: FSMContext) -> None:
+    """Save new title."""
+    new_title = message.text.strip()
+    if len(new_title) < 3:
+        await message.answer("⚠️ Назва занадто коротка (мін. 3 символи):")
+        return
+    
+    data = await state.get_data()
+    test_id = data["editing_test_id"]
+    
+    await queries.update_test(test_id, title=new_title)
+    await message.answer(
+        f"✅ Назву оновлено на *{new_title}*",
+        parse_mode="Markdown",
+    )
+    
+    user = await queries.get_user(message.from_user.id)
+    tests = await queries.get_teacher_tests(user["id"], message.from_user.id)
+    await message.answer(
+        f"📋 *Ваші тести* ({len(tests)}):",
+        reply_markup=my_tests_keyboard(tests),
+        parse_mode="Markdown",
+    )
+    await state.clear()
+
+
+@router.callback_query(TeacherStates.editing_test, EditTestCallback.filter(F.action == "desc"))
+async def edit_test_description_prompt(callback: CallbackQuery, callback_data: EditTestCallback, state: FSMContext) -> None:
+    """Ask for new description."""
+    test = await queries.get_test(callback_data.id)
+    current_desc = test.get("description") or "_(немає)_"
+    await callback.message.edit_text(
+        f"📄 Поточний опис: {current_desc}\n\n"
+        "Введіть новий опис (або /skip щоб пропустити):",
+        parse_mode="Markdown",
+    )
+    await state.update_data(editing_test_id=callback_data.id)
+    await state.set_state(TeacherStates.editing_test_description)
+    await callback.answer()
+
+
+@router.message(TeacherStates.editing_test_description, F.text)
+async def edit_test_description_save(message: Message, state: FSMContext) -> None:
+    """Save new description."""
+    new_desc = None if message.text.strip().lower() == "/skip" else message.text.strip()
+    
+    data = await state.get_data()
+    test_id = data["editing_test_id"]
+    
+    await queries.update_test(test_id, description=new_desc)
+    await message.answer(
+        f"✅ Опис оновлено.",
+        parse_mode="Markdown",
+    )
+    
+    user = await queries.get_user(message.from_user.id)
+    tests = await queries.get_teacher_tests(user["id"], message.from_user.id)
+    await message.answer(
+        f"📋 *Ваші тести* ({len(tests)}):",
+        reply_markup=my_tests_keyboard(tests),
+        parse_mode="Markdown",
+    )
+    await state.clear()
+
+
+@router.callback_query(TeacherStates.editing_test, EditTestCallback.filter(F.action == "vis"))
+async def edit_test_visibility_prompt(callback: CallbackQuery, callback_data: EditTestCallback, state: FSMContext) -> None:
+    """Ask for new visibility."""
+    test = await queries.get_test(callback_data.id)
+    vis_text = "Публічний" if test["is_public"] else f"Приватний (код: {test['access_code']})"
+    
+    await callback.message.edit_text(
+        f"🔍 Поточна видимість: {vis_text}\n\n"
+        "Оберіть нову видимість:",
+        reply_markup=visibility_keyboard(),
+        parse_mode="Markdown",
+    )
+    await state.update_data(editing_test_id=callback_data.id)
+    await state.set_state(TeacherStates.editing_test_visibility)
+    await callback.answer()
+
+
+@router.callback_query(TeacherStates.editing_test_visibility, VisibilityCallback.filter())
+async def edit_test_visibility_save(callback: CallbackQuery, callback_data: VisibilityCallback, state: FSMContext) -> None:
+    """Save new visibility."""
+    is_public = callback_data.value == "public"
+    access_code = None if is_public else _generate_code()
+    
+    data = await state.get_data()
+    test_id = data["editing_test_id"]
+    
+    await queries.update_test(test_id, is_public=is_public, access_code=access_code)
+    
+    note = "Тест тепер *публічний*." if is_public else f"Тест тепер *приватний*.\nНовий код: `{access_code}`"
+    await callback.message.edit_text(
+        f"✅ {note}",
+        parse_mode="Markdown",
+    )
+    await callback.answer("Збережено!")
+    
+    user = await queries.get_user(callback.from_user.id)
+    tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
+    await callback.message.answer(
+        f"📋 *Ваші тести* ({len(tests)}):",
+        reply_markup=my_tests_keyboard(tests),
+        parse_mode="Markdown",
+    )
+    await state.clear()
+
+
+@router.callback_query(TeacherStates.editing_test, EditTestCallback.filter(F.action == "attempts"))
+async def edit_test_attempts_prompt(callback: CallbackQuery, callback_data: EditTestCallback, state: FSMContext) -> None:
+    """Ask for new attempts limit."""
+    test = await queries.get_test(callback_data.id)
+    att_text = f"{test['max_attempts']} спроб" if test['max_attempts'] else "Необмежено"
+    
+    await callback.message.edit_text(
+        f"⏱️ Поточне обмеження: {att_text}\n\n"
+        "Оберіть нове:",
+        reply_markup=attempts_keyboard(),
+        parse_mode="Markdown",
+    )
+    await state.update_data(editing_test_id=callback_data.id)
+    await state.set_state(TeacherStates.editing_test_attempts)
+    await callback.answer()
+
+
+@router.callback_query(TeacherStates.editing_test_attempts, AttemptsCallback.filter())
+async def edit_test_attempts_select(callback: CallbackQuery, callback_data: AttemptsCallback, state: FSMContext) -> None:
+    """Select attempts limit."""
+    if callback_data.value == "unlimited":
+        data = await state.get_data()
+        test_id = data["editing_test_id"]
+        
+        await queries.update_test(test_id, max_attempts=None)
+        await callback.message.edit_text(
+            "✅ Тест може проходитися необмежену кількість разів.",
+            parse_mode="Markdown",
+        )
+        await callback.answer()
+    else:
+        await callback.message.edit_text(
+            "Скільки спроб дозволити?",
+            reply_markup=limited_attempts_keyboard(),
+            parse_mode="Markdown",
+        )
+        await state.set_state(TeacherStates.editing_test_limited_attempts)
+        await callback.answer()
+
+
+@router.callback_query(TeacherStates.editing_test_limited_attempts, LimitedAttemptsCallback.filter())
+async def edit_test_limited_attempts_save(callback: CallbackQuery, callback_data: LimitedAttemptsCallback, state: FSMContext) -> None:
+    """Save limited attempts."""
+    data = await state.get_data()
+    test_id = data["editing_test_id"]
+    
+    await queries.update_test(test_id, max_attempts=callback_data.count)
+    
+    attempts_text = "1 спроба" if callback_data.count == 1 else f"{callback_data.count} спроб"
+    await callback.message.edit_text(
+        f"✅ Максимум спроб: *{attempts_text}*",
+        parse_mode="Markdown",
+    )
+    await callback.answer()
+    
+    user = await queries.get_user(callback.from_user.id)
+    tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
+    await callback.message.answer(
+        f"📋 *Ваші тести* ({len(tests)}):",
+        reply_markup=my_tests_keyboard(tests),
+        parse_mode="Markdown",
+    )
+    await state.clear()
+
+
+@router.callback_query(TeacherStates.editing_test, EditTestCallback.filter(F.action == "questions"))
+async def edit_questions_list(callback: CallbackQuery, callback_data: EditTestCallback, state: FSMContext) -> None:
+    """Show list of questions for editing."""
+    test = await queries.get_test_with_questions(callback_data.id)
+    questions = test.get("questions", []) if test else []
+    
+    if not questions:
+        await callback.answer("❓ У цьому тесті немає питань.", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        f"❓ *Питання тесту: {test['title']}*\n\n"
+        "Оберіть питання для редагування:",
+        reply_markup=edit_questions_list_keyboard(callback_data.id, questions),
+        parse_mode="Markdown",
+    )
+    await state.set_state(TeacherStates.editing_questions_menu)
+    await callback.answer()
+
+
+@router.callback_query(TeacherStates.editing_questions_menu, EditQuestionCallback.filter(F.action == "delete"))
+async def delete_question(callback: CallbackQuery, callback_data: EditQuestionCallback, state: FSMContext) -> None:
+    """Delete a question."""
+    deleted = await queries.delete_question(callback_data.id)
+    if deleted:
+        await callback.answer("✅ Питання видалено.", show_alert=True)
+    else:
+        await callback.answer("⚠️ Помилка видалення.", show_alert=True)
+    await callback.answer()
+
+
+@router.callback_query(TeacherStates.editing_questions_menu, EditQuestionCallback.filter(F.action == "edit"))
+async def edit_question_prompt(callback: CallbackQuery, callback_data: EditQuestionCallback, state: FSMContext) -> None:
+    """Edit question text or options."""
+    question = await queries.get_questions_by_test(0)  # This needs test_id, will update
+    
+    # Simplified: show edit menu
+    await callback.message.edit_text(
+        "❓ Редагування питання (базовий функціонал)\n\n"
+        "_Переходиться на версію із UI для редагування тексту._",
+        parse_mode="Markdown",
+    )
+    await callback.answer()
+
+
+# Handle Back button during editing
+
+@router.callback_query(TeacherStates.editing_test, BackCallback.filter())
+async def back_from_edit_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    """Return to tests list from edit menu."""
+    user = await queries.get_user(callback.from_user.id)
+    tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
+    
+    await callback.message.edit_text(
+        f"📋 *Ваші тести* ({len(tests)}):",
+        reply_markup=my_tests_keyboard(tests),
+        parse_mode="Markdown",
+    )
+    await state.set_state(TeacherStates.viewing_tests_and_results)
+    await callback.answer()
+
+
+@router.callback_query(TeacherStates.editing_test_title, BackCallback.filter())
+async def back_from_edit_title(callback: CallbackQuery, state: FSMContext) -> None:
+    """Return to edit menu from title edit."""
+    data = await state.get_data()
+    test_id = data.get("editing_test_id")
+    
+    if test_id:
+        await callback.message.edit_text(
+            "✏️ Редагування тесту",
+            reply_markup=edit_test_menu_keyboard(test_id),
+            parse_mode="Markdown",
+        )
+    await state.set_state(TeacherStates.editing_test)
+    await callback.answer()
+
+
+@router.callback_query(TeacherStates.editing_questions_menu, BackCallback.filter())
+async def back_from_questions_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    """Return to edit menu from questions list."""
+    data = await state.get_data()
+    test_id = data.get("editing_test_id")
+    
+    if test_id:
+        await callback.message.edit_text(
+            "✏️ Редагування тесту",
+            reply_markup=edit_test_menu_keyboard(test_id),
+            parse_mode="Markdown",
+        )
+    await state.set_state(TeacherStates.editing_test)
+    await callback.answer()
+
+
+@router.callback_query(TeacherStates.editing_test_description, BackCallback.filter())
+async def back_from_edit_description(callback: CallbackQuery, state: FSMContext) -> None:
+    """Return to edit menu from description edit."""
+    data = await state.get_data()
+    test_id = data.get("editing_test_id")
+    
+    if test_id:
+        await callback.message.edit_text(
+            "✏️ Редагування тесту",
+            reply_markup=edit_test_menu_keyboard(test_id),
+            parse_mode="Markdown",
+        )
+    await state.set_state(TeacherStates.editing_test)
+    await callback.answer()
+
+
+@router.callback_query(TeacherStates.editing_test_visibility, BackCallback.filter())
+async def back_from_edit_visibility(callback: CallbackQuery, state: FSMContext) -> None:
+    """Return to edit menu from visibility edit."""
+    data = await state.get_data()
+    test_id = data.get("editing_test_id")
+    
+    if test_id:
+        await callback.message.edit_text(
+            "✏️ Редагування тесту",
+            reply_markup=edit_test_menu_keyboard(test_id),
+            parse_mode="Markdown",
+        )
+    await state.set_state(TeacherStates.editing_test)
+    await callback.answer()
+
+
+@router.callback_query(TeacherStates.editing_test_attempts, BackCallback.filter())
+@router.callback_query(TeacherStates.editing_test_limited_attempts, BackCallback.filter())
+async def back_from_edit_attempts(callback: CallbackQuery, state: FSMContext) -> None:
+    """Return to edit menu from attempts edit."""
+    data = await state.get_data()
+    test_id = data.get("editing_test_id")
+    
+    if test_id:
+        await callback.message.edit_text(
+            "✏️ Редагування тесту",
+            reply_markup=edit_test_menu_keyboard(test_id),
+            parse_mode="Markdown",
+        )
+    await state.set_state(TeacherStates.editing_test)
+    await callback.answer()

@@ -105,6 +105,7 @@ CREATE TABLE test_sessions (
     student_id      BIGINT REFERENCES users(id) ON DELETE CASCADE,
     score           INTEGER DEFAULT 0,
     total_questions INTEGER DEFAULT 0,
+    percentage      REAL DEFAULT 0,
     started_at      TIMESTAMPTZ DEFAULT NOW(),
     completed_at    TIMESTAMPTZ
 );
