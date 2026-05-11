@@ -5,3 +5,4 @@ __pycache__/
 *.pyd
 requirements.txt
 .DS_Store
+PROJECT_REQUIREMENTS.md

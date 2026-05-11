@@ -3,6 +3,8 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
 )
 
+from config.i18n import i18n
+
 from .callbacks import (
     RoleCallback, LangCallback, SubjectCallback, TestCallback,
     VisibilityCallback, OptionCallback, QuestionNextCallback,
@@ -36,11 +38,10 @@ def language_keyboard() -> InlineKeyboardMarkup:
 # Main menus (Reply)
 
 def teacher_menu(lang: str = "uk") -> ReplyKeyboardMarkup:
-    from config.i18n import i18n
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=i18n("menu_create_test", lang))],
-            [KeyboardButton(text="📋 Мої тести та результати")],
+            [KeyboardButton(text=i18n("menu_my_tests", lang))],
             [KeyboardButton(text="📊 Статистика")],
         ],
         resize_keyboard=True,
