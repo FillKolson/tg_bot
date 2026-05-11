@@ -21,7 +21,24 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
-SUPABASE_KEY = os.getenv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY")
+SUPABASE_ANON_KEY = os.getenv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
+
+# Validate critical environment variables
+if not all([BOT_TOKEN, SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_JWT_SECRET]):
+    missing = []
+    if not BOT_TOKEN:
+        missing.append("BOT_TOKEN")
+    if not SUPABASE_URL:
+        missing.append("NEXT_PUBLIC_SUPABASE_URL")
+    if not SUPABASE_ANON_KEY:
+        missing.append("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY")
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        missing.append("SUPABASE_SERVICE_ROLE_KEY")
+    if not SUPABASE_JWT_SECRET:
+        missing.append("SUPABASE_JWT_SECRET")
+    raise ValueError(f"❌ Missing critical environment variables: {', '.join(missing)}")
 
 # Logging setup
 logging.basicConfig(
@@ -42,10 +59,15 @@ dp.include_router(student.router)
 
 
 async def init_supabase() -> AsyncClient:
-    client = await create_async_client(SUPABASE_URL, SUPABASE_KEY)
-    queries.init(client)
-    logger.info("Supabase client initialized")
-    return client
+    """Initialize Supabase admin client."""
+    # Admin client uses SERVICE_ROLE_KEY to bypass RLS and access all data
+    admin_client = await create_async_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    
+    # Initialize queries module with admin client
+    queries.init(admin_client, SUPABASE_JWT_SECRET, SUPABASE_URL)
+    
+    logger.info("✅ Supabase admin client initialized")
+    return admin_client
 
 
 async def main() -> None:
