@@ -92,3 +92,9 @@ class StatisticsCallback(CallbackData, prefix="stats"):
 
 class ConfirmDeleteCallback(CallbackData, prefix="delconf"):
     action: str  # "yes" | "no"
+
+
+# Teacher tests by subject
+
+class TeacherTestsSubjectCallback(CallbackData, prefix="tsubj"):
+    id: int  # subject_id

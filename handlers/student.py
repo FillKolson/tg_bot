@@ -2,6 +2,7 @@
 Student handlers - browse subjects, take tests, view results.
 """
 import logging
+from datetime import datetime
 from typing import Optional
 
 from aiogram import Router, F
@@ -9,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from db import queries
+from config.i18n import i18n
 from keyboards.callbacks import SubjectCallback, TestCallback, BackCallback, SearchCallback, TeacherFilterCallback
 from keyboards.keyboards import (
     student_menu, subjects_keyboard, tests_keyboard,
@@ -19,12 +21,31 @@ from states.states import StudentStates
 logger = logging.getLogger(__name__)
 router = Router()
 
+def _attempts_label(max_attempts: int, lang: str) -> str:
+    if lang == "en":
+        return "1 attempt" if max_attempts == 1 else f"{max_attempts} attempts"
+    return "1 спроба" if max_attempts == 1 else f"{max_attempts} спроб"
+
+
+def _grade_i18n(pct: int, lang: str) -> str:
+    if pct == 100:
+        return i18n("grade_excellent", lang)
+    elif pct >= 80:
+        return i18n("grade_good", lang)
+    elif pct >= 60:
+        return i18n("grade_satisfactory", lang)
+    elif pct >= 40:
+        return i18n("grade_weak", lang)
+    else:
+        return i18n("grade_poor", lang)
+
 
 async def _require_student(msg_or_cq) -> Optional[dict]:
     tid = msg_or_cq.from_user.id
     user = await queries.get_user(tid)
     if not user or user["role"] != "student":
-        text = "⛔ Ця функція доступна лише для студентів."
+        lang = user.get("language", "uk") if user else "uk"
+        text = i18n("student_only", lang)
         if isinstance(msg_or_cq, CallbackQuery):
             await msg_or_cq.answer(text, show_alert=True)
         else:
@@ -35,21 +56,22 @@ async def _require_student(msg_or_cq) -> Optional[dict]:
 
 # Browse subjects
 
-@router.message(F.text == "📚 Предмети")
+@router.message(F.text.in_(["📚 Предмети", "📚 Subjects", "Предмети", "Subjects"]))
 async def browse_subjects(message: Message, state: FSMContext) -> None:
     user = await _require_student(message)
     if not user:
         return
+    lang = user.get("language", "uk")
     await state.clear()
     subjects = await queries.get_subjects(message.from_user.id)
 
     if not subjects:
-        await message.answer("😔 Публічних предметів ще немає.\nСпробуйте ввести код приватного тесту через 🔑.")
+        await message.answer(i18n("no_public_tests", lang))
         return
 
     await message.answer(
-        "📚 *Оберіть предмет:*",
-        reply_markup=subjects_keyboard(subjects),
+        i18n("select_subject", lang),
+        reply_markup=subjects_keyboard(subjects, lang=lang),
         parse_mode="Markdown",
     )
     await state.set_state(StudentStates.browsing_subjects)
@@ -57,16 +79,18 @@ async def browse_subjects(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(StudentStates.browsing_subjects, SubjectCallback.filter())
 async def browse_tests(callback: CallbackQuery, callback_data: SubjectCallback, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     subject = await queries.get_subject(callback_data.id)
     tests = await queries.get_public_tests_by_subject(callback_data.id, callback.from_user.id)
 
     if not tests:
-        await callback.answer("😔 У цьому предметі ще немає публічних тестів.", show_alert=True)
+        await callback.answer(i18n("no_tests_in_subject", lang), show_alert=True)
         return
 
     await callback.message.edit_text(
-        f"📖 *{subject['name']}* — тести ({len(tests)}):",
-        reply_markup=tests_keyboard(tests),
+        i18n("tests_in_subject", lang, subject=subject["name"], count=len(tests)),
+        reply_markup=tests_keyboard(tests, lang=lang),
         parse_mode="Markdown",
     )
     await state.set_state(StudentStates.browsing_tests)
@@ -76,10 +100,12 @@ async def browse_tests(callback: CallbackQuery, callback_data: SubjectCallback, 
 @router.callback_query(StudentStates.browsing_tests, BackCallback.filter(F.data.endswith("subjects")))
 @router.callback_query(StudentStates.browsing_subjects, BackCallback.filter())
 async def back_to_subjects(callback: CallbackQuery, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     subjects = await queries.get_subjects(callback.from_user.id)
     await callback.message.edit_text(
-        "📚 *Оберіть предмет:*",
-        reply_markup=subjects_keyboard(subjects),
+        i18n("select_subject", lang),
+        reply_markup=subjects_keyboard(subjects, lang=lang),
         parse_mode="Markdown",
     )
     await state.set_state(StudentStates.browsing_subjects)
@@ -88,15 +114,15 @@ async def back_to_subjects(callback: CallbackQuery, state: FSMContext) -> None:
 
 # Private test - access code
 
-@router.message(F.text == "🔑 Ввести код")
+@router.message(F.text.in_(["🔑 Ввести код", "🔑 Enter Code", "Ввести код", "Enter Code"]))
 async def enter_code_prompt(message: Message, state: FSMContext) -> None:
     user = await _require_student(message)
     if not user:
         return
+    lang = user.get("language", "uk")
     await state.clear()
     await message.answer(
-        "🔑 Введіть код доступу до приватного тесту:\n\n"
-        "_/cancel — скасувати_",
+        i18n("enter_code_prompt", lang),
         parse_mode="Markdown",
     )
     await state.set_state(StudentStates.entering_access_code)
@@ -104,11 +130,13 @@ async def enter_code_prompt(message: Message, state: FSMContext) -> None:
 
 @router.message(StudentStates.entering_access_code, F.text)
 async def process_access_code(message: Message, state: FSMContext) -> None:
+    user = await queries.get_user(message.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     code = message.text.strip().upper()
     test = await queries.get_test_by_code(code, message.from_user.id)
 
     if not test:
-        await message.answer("❌ Тест із таким кодом не знайдено. Перевірте код та спробуйте ще раз:")
+        await message.answer(i18n("code_not_found", lang))
         return
 
     q_count = await queries.get_question_count(test["id"])
@@ -116,13 +144,16 @@ async def process_access_code(message: Message, state: FSMContext) -> None:
     teacher_name = test["users"]["name"] if test.get("users") else "—"
 
     await message.answer(
-        f"✅ Знайдено тест:\n\n"
-        f"📝 *{test['title']}*\n"
-        f"📖 Предмет: {subject_name}\n"
-        f"👨‍🏫 Вчитель: {teacher_name}\n"
-        f"❓ Питань: {q_count}\n"
-        + (f"📄 {test['description']}\n" if test.get("description") else ""),
-        reply_markup=start_test_keyboard(test["id"]),
+        i18n(
+            "test_found",
+            lang,
+            title=test["title"],
+            subject=subject_name,
+            teacher=teacher_name,
+            count=q_count,
+            description=(i18n("test_found_description", lang, description=test["description"]) if test.get("description") else ""),
+        ),
+        reply_markup=start_test_keyboard(test["id"], lang=lang),
         parse_mode="Markdown",
     )
     await state.set_state(StudentStates.browsing_tests)
@@ -135,10 +166,11 @@ async def test_preview(callback: CallbackQuery, callback_data: TestCallback, sta
     user = await _require_student(callback)
     if not user:
         return
+    lang = user.get("language", "uk")
 
     test = await queries.get_test(callback_data.id, callback.from_user.id)
     if not test:
-        await callback.answer("⚠️ Тест не знайдено.", show_alert=True)
+        await callback.answer(i18n("test_not_found", lang), show_alert=True)
         return
 
     q_count = await queries.get_question_count(test["id"])
@@ -149,23 +181,25 @@ async def test_preview(callback: CallbackQuery, callback_data: TestCallback, sta
     if test.get("max_attempts"):
         attempt_count = await queries.get_student_attempt_count(test["id"], user["id"])
         remaining = test["max_attempts"] - attempt_count
-        attempts_text = f"Спроб залишилось: {remaining}/{test['max_attempts']}"
+        attempts_text = i18n("attempts_left", lang, remaining=remaining, max=test["max_attempts"])
         if remaining <= 0:
-            attempts_text = f"❌ Спроби вичерпані ({test['max_attempts']}/{test['max_attempts']})"
-        else:
-            attempts_text = f"⏱️ {attempts_text}"
+            attempts_text = i18n("attempts_exhausted", lang, max=test["max_attempts"])
         attempts_info = f"{attempts_text}\n"
     else:
-        attempts_info = "♾️ Спроби: необмежено\n"
+        attempts_info = i18n("attempts_unlimited_info", lang) + "\n"
 
     await callback.message.edit_text(
-        f"📝 *{test['title']}*\n"
-        f"👨‍🏫 Вчитель: {teacher_name}\n"
-        f"❓ Питань: {q_count}\n"
-        f"{attempts_info}"
-        + (f"📄 {test['description']}\n" if test.get("description") else "")
-        + "\nНатисніть *▶️ Розпочати тест*, коли будете готові.",
-        reply_markup=start_test_keyboard(test["id"]),
+        i18n(
+            "test_preview",
+            lang,
+            title=test["title"],
+            teacher=teacher_name,
+            count=q_count,
+            attempts=attempts_info,
+            description=(i18n("test_preview_description", lang, description=test["description"]) if test.get("description") else ""),
+            confirm=i18n("test_start_confirm", lang),
+        ),
+        reply_markup=start_test_keyboard(test["id"], lang=lang),
         parse_mode="Markdown",
     )
     await callback.answer()
@@ -178,19 +212,20 @@ async def start_test(callback: CallbackQuery, callback_data: TestCallback, state
     user = await _require_student(callback)
     if not user:
         return
+    lang = user.get("language", "uk")
 
     test = await queries.get_test_with_questions(callback_data.id, callback.from_user.id)
     if not test or not test.get("questions"):
-        await callback.answer("⚠️ У цьому тесті немає питань.", show_alert=True)
+        await callback.answer(i18n("test_no_questions", lang), show_alert=True)
         return
 
     # Check attempt limit
     if test.get("max_attempts"):
         attempt_count = await queries.get_student_attempt_count(test["id"], user["id"])
         if attempt_count >= test["max_attempts"]:
-            attempts_text = "1 спроба" if test["max_attempts"] == 1 else f"{test['max_attempts']} спроб"
+            attempts_text = _attempts_label(test["max_attempts"], lang)
             await callback.answer(
-                f"❌ Ви вичерпали всі спроби ({attempts_text}) для цього тесту.",
+                i18n("attempts_all_used_alert", lang, attempts=attempts_text),
                 show_alert=True
             )
             return
@@ -201,16 +236,17 @@ async def start_test(callback: CallbackQuery, callback_data: TestCallback, state
     await state.update_data(
         test_id=test["id"],
         session_id=session["id"],
+        test_title=test["title"],
+        subject_name=test.get("subjects", {}).get("name", "—"),
         questions=test["questions"],
         current_index=0,
         score=0,
         show_answer_correctness=test.get("show_answer_correctness", False),
+        lang=lang,
     )
 
     await callback.message.edit_text(
-        f"🚀 *{test['title']}* розпочато!\n"
-        f"❓ Всього питань: {len(test['questions'])}\n\n"
-        "Відповідайте на питання нижче:",
+        i18n("test_started", lang, title=test["title"], count=len(test["questions"])),
         parse_mode="Markdown",
     )
     await _send_question(callback.message, state)
@@ -219,13 +255,14 @@ async def start_test(callback: CallbackQuery, callback_data: TestCallback, state
 
 async def _send_question(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
+    lang = data.get("lang", "uk")
     questions = data["questions"]
     idx = data["current_index"]
     q = questions[idx]
     total = len(questions)
 
     await message.answer(
-        f"*Питання {idx + 1} / {total}*\n\n{q['text']}",
+        f"{i18n('question_counter', lang, current=idx + 1, total=total)}\n\n{q['text']}",
         reply_markup=answer_keyboard(q["id"], q["options"]),
         parse_mode="Markdown",
     )
@@ -235,11 +272,14 @@ async def _send_question(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(StudentStates.taking_test, F.data.startswith("ans:"))
 async def handle_answer(callback: CallbackQuery, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     _, q_id_str, opt_id_str = callback.data.split(":")
     question_id = int(q_id_str)
     option_id = int(opt_id_str)
 
     data = await state.get_data()
+    lang = data.get("lang", lang)
     questions = data["questions"]
     idx = data["current_index"]
     q = questions[idx]
@@ -247,7 +287,7 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext) -> None:
     # Find selected option
     selected_opt = next((o for o in q["options"] if o["id"] == option_id), None)
     if not selected_opt:
-        await callback.answer("⚠️ Помилка вибору. Спробуйте ще раз.", show_alert=True)
+        await callback.answer(i18n("answer_error", lang), show_alert=True)
         return
 
     is_correct = selected_opt["is_correct"]
@@ -262,13 +302,13 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext) -> None:
     if show_answers:
         # Show immediate feedback with correct/incorrect info
         if is_correct:
-            feedback = "✅ *Правильно!*"
+            feedback = i18n("correct_answer", lang)
         else:
             correct_text = correct_opt["text"] if correct_opt else "—"
-            feedback = f"❌ *Неправильно.*\nПравильна відповідь: _{correct_text}_"
+            feedback = i18n("wrong_answer", lang, correct=correct_text)
     else:
         # Hide correctness info, only confirm answer was saved
-        feedback = "✅ Відповідь збережено"
+        feedback = i18n("answer_saved", lang)
 
     await callback.message.edit_reply_markup()  # remove buttons
     await callback.message.answer(feedback, parse_mode="Markdown")
@@ -282,15 +322,19 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext) -> None:
         await queries.complete_session(data["session_id"], score, pct)
         await state.clear()
         bar = _progress_bar(pct)
-        grade = _grade(pct)
+        grade = _grade_i18n(pct, lang)
+        title = data.get("test_title", "Тест")
+        subject_name = data.get("subject_name", "—")
 
         await callback.message.answer(
             f"🏁 *Тест завершено!*\n\n"
+            f"📝 *{title}*\n"
+            f"📖 Предмет: {subject_name}\n"
             f"📊 Результат: *{score} / {total}* ({pct}%)\n"
             f"{bar}\n"
             f"{grade}\n\n"
-            "Повернення до меню:",
-            reply_markup=student_menu(),
+            "📌 Перегляньте історію у меню *📈 Мої результати*.",
+            reply_markup=student_menu(lang),
             parse_mode="Markdown",
         )
     else:
@@ -302,33 +346,22 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext) -> None:
 
 # My results
 
-@router.message(F.text == "📈 Мої результати")
+@router.message(F.text.in_(["📈 Мої результати", "📈 My Results", "Мої результати", "My Results"]))
 async def my_results(message: Message, state: FSMContext) -> None:
     user = await _require_student(message)
     if not user:
         return
+    lang = user.get("language", "uk")
     await state.clear()
 
     sessions = await queries.get_student_sessions(user["id"], message.from_user.id)
 
     if not sessions:
-        await message.answer("📭 Ви ще не проходили жодного тесту.")
+        await message.answer(i18n("no_results_student", lang))
         return
 
-    lines = [f"📈 *Ваші результати* ({len(sessions)} тестів):\n"]
-    for s in sessions:
-        pct = round(s.get("percentage", 0))
-        bar = _progress_bar(pct, length=8)
-        title = s["tests"]["title"] if s.get("tests") else "—"
-        subj = ""
-        if s.get("tests") and s["tests"].get("subjects"):
-            subj = f" [{s['tests']['subjects']['name']}]"
-        lines.append(
-            f"📝 *{title}*{subj}\n"
-            f"   {bar} {pct}% ({s['score']}/{s['total_questions']})\n"
-        )
-
-    await message.answer("\n".join(lines), parse_mode="Markdown")
+    text = _student_results_summary(sessions)
+    await message.answer(text, parse_mode="Markdown")
 
 
 # Helpers
@@ -339,32 +372,82 @@ def _progress_bar(pct: int, length: int = 10) -> str:
 
 
 def _grade(pct: int) -> str:
-    if pct == 100:
-        return "🏆 Відмінно! Бездоганний результат!"
-    elif pct >= 80:
-        return "🥇 Добре! Ви добре знаєте матеріал."
-    elif pct >= 60:
-        return "🥈 Задовільно. Є що покращити."
-    elif pct >= 40:
-        return "🥉 Слабо. Варто повторити тему."
-    else:
-        return "📚 Потрібно більше вчитись."
+    # Backwards-compatible fallback for older call sites.
+    return _grade_i18n(pct, "uk")
+
+
+def _grade_short(pct: int) -> str:
+    if pct >= 80:
+        return "✅ Успішно"
+    if pct >= 60:
+        return "⚠️ Добре"
+    return "❌ Потрібно повторити"
+
+
+def _format_date(dt: str | None) -> str:
+    if not dt:
+        return "—"
+    try:
+        if dt.endswith("Z"):
+            dt = dt[:-1] + "+00:00"
+        date_obj = datetime.fromisoformat(dt)
+        return date_obj.strftime("%d.%m.%Y")
+    except Exception:
+        return dt
+
+
+def _student_results_summary(sessions: list[dict]) -> str:
+    total = len(sessions)
+    avg_pct = round(sum(round(s.get("percentage", 0)) for s in sessions) / total)
+    best = max(sessions, key=lambda s: round(s.get("percentage", 0)))
+    latest = sessions[0]
+    subjects = {
+        s.get("tests", {}).get("subjects", {}).get("name", "—")
+        for s in sessions if s.get("tests")
+    }
+    subject_count = len(subjects)
+
+    lines = [
+        "📈 *Ваші результати*",
+        f"   • Тестів: {total}",
+        f"   • Середній бал: {avg_pct}%",
+        f"   • Кращий результат: *{best.get('tests', {}).get('title', '—')}* ({round(best.get('percentage', 0))}%)",
+        f"   • Останній тест: *{latest.get('tests', {}).get('title', '—')}* ({round(latest.get('percentage', 0))}%)",
+        f"   • Предметів: {subject_count}",
+        "",
+    ]
+
+    for s in sessions:
+        pct = round(s.get("percentage", 0))
+        bar = _progress_bar(pct, length=8)
+        title = s.get("tests", {}).get("title", "—")
+        subject_name = s.get("tests", {}).get("subjects", {}).get("name", "—")
+        date = _format_date(s.get("completed_at"))
+        status = _grade_short(pct)
+        lines.extend([
+            f"*{title}* [{subject_name}]",
+            f"   {bar} {pct}% ({s.get('score', 0)}/{s.get('total_questions', 0)})",
+            f"   {date} · {status}",
+            "",
+        ])
+
+    return "\n".join(lines)
 
 
 # Search and filter
 
-@router.message(F.text == "🔍 Пошук")
+@router.message(F.text.in_(["🔍 Пошук", "🔍 Search", "Пошук", "Search"]))
 async def search_tests(message: Message, state: FSMContext) -> None:
     """Open search menu."""
     user = await _require_student(message)
     if not user:
         return
+    lang = user.get("language", "uk")
     await state.clear()
     
     await message.answer(
-        "🔍 *Пошук тестів*\n\n"
-        "Оберіть як шукати:",
-        reply_markup=search_menu_keyboard(),
+        i18n("search_title", lang),
+        reply_markup=search_menu_keyboard(lang),
         parse_mode="Markdown",
     )
     await state.set_state(StudentStates.searching_tests)
@@ -373,8 +456,10 @@ async def search_tests(message: Message, state: FSMContext) -> None:
 @router.callback_query(StudentStates.searching_tests, SearchCallback.filter(F.action == "by_name"))
 async def search_by_name_prompt(callback: CallbackQuery, state: FSMContext) -> None:
     """Ask for search query."""
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     await callback.message.edit_text(
-        "🔍 Введіть назву тесту для пошуку:",
+        i18n("search_by_name_prompt", lang),
         parse_mode="Markdown",
     )
     await state.set_state(StudentStates.searching_by_name)
@@ -384,23 +469,25 @@ async def search_by_name_prompt(callback: CallbackQuery, state: FSMContext) -> N
 @router.message(StudentStates.searching_by_name, F.text)
 async def search_by_name(message: Message, state: FSMContext) -> None:
     """Search tests by name."""
+    user = await queries.get_user(message.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     query = message.text.strip()
     if len(query) < 2:
-        await message.answer("⚠️ Запит занадто короткий (мін. 2 символи):")
+        await message.answer(i18n("search_query_too_short", lang))
         return
     
     tests = await queries.search_tests_by_name(query)
     
     if not tests:
         await message.answer(
-            f"😔 Тестів з назвою *{query}* не знайдено.",
+            i18n("search_not_found", lang, query=query),
             parse_mode="Markdown",
         )
         return
     
     await message.answer(
-        f"🔍 *Результати пошуку за \"{query}\"* ({len(tests)}):",
-        reply_markup=tests_keyboard(tests),
+        i18n("search_results", lang, query=query, count=len(tests)),
+        reply_markup=tests_keyboard(tests, lang=lang),
         parse_mode="Markdown",
         )
     await state.set_state(StudentStates.browsing_tests)
@@ -409,15 +496,17 @@ async def search_by_name(message: Message, state: FSMContext) -> None:
 @router.callback_query(StudentStates.searching_tests, SearchCallback.filter(F.action == "by_subject"))
 async def search_by_subject(callback: CallbackQuery, state: FSMContext) -> None:
     """Show subjects for filtering."""
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     subjects = await queries.get_subjects()
     
     if not subjects:
-        await callback.answer("😔 Предметів ще немає.", show_alert=True)
+        await callback.answer(i18n("no_subjects_yet", lang), show_alert=True)
         return
     
     await callback.message.edit_text(
-        "📖 *Оберіть предмет:*",
-        reply_markup=subjects_keyboard(subjects),
+        i18n("select_subject", lang),
+        reply_markup=subjects_keyboard(subjects, lang=lang),
         parse_mode="Markdown",
     )
     await state.set_state(StudentStates.filtering_by_subject)
@@ -427,16 +516,18 @@ async def search_by_subject(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(StudentStates.filtering_by_subject, SubjectCallback.filter())
 async def show_tests_by_subject(callback: CallbackQuery, callback_data: SubjectCallback, state: FSMContext) -> None:
     """Show tests for selected subject."""
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     subject = await queries.get_subject(callback_data.id)
     tests = await queries.get_public_tests_by_subject(callback_data.id, callback.from_user.id)
     
     if not tests:
-        await callback.answer("😔 У цьому предметі ще немає публічних тестів.", show_alert=True)
+        await callback.answer(i18n("no_tests_in_subject", lang), show_alert=True)
         return
     
     await callback.message.edit_text(
-        f"📖 *{subject['name']}* — тести ({len(tests)}):",
-        reply_markup=tests_keyboard(tests),
+        i18n("tests_in_subject", lang, subject=subject["name"], count=len(tests)),
+        reply_markup=tests_keyboard(tests, lang=lang),
         parse_mode="Markdown",
     )
     await state.set_state(StudentStates.browsing_tests)
@@ -446,15 +537,17 @@ async def show_tests_by_subject(callback: CallbackQuery, callback_data: SubjectC
 @router.callback_query(StudentStates.searching_tests, SearchCallback.filter(F.action == "by_teacher"))
 async def search_by_teacher_prompt(callback: CallbackQuery, state: FSMContext) -> None:
     """Show list of teachers."""
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     teachers = await queries.get_all_teachers()
     
     if not teachers:
-        await callback.answer("😔 Вчителів ще немає.", show_alert=True)
+        await callback.answer(i18n("no_teachers_yet", lang), show_alert=True)
         return
     
     await callback.message.edit_text(
-        "👨‍🏫 *Оберіть вчителя:*",
-        reply_markup=teachers_list_keyboard(teachers),
+        i18n("select_teacher", lang),
+        reply_markup=teachers_list_keyboard(teachers, lang=lang),
         parse_mode="Markdown",
     )
     await state.set_state(StudentStates.filtering_by_teacher)
@@ -464,16 +557,18 @@ async def search_by_teacher_prompt(callback: CallbackQuery, state: FSMContext) -
 @router.callback_query(StudentStates.filtering_by_teacher, TeacherFilterCallback.filter())
 async def show_tests_by_teacher(callback: CallbackQuery, callback_data: TeacherFilterCallback, state: FSMContext) -> None:
     """Show tests for selected teacher."""
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     teacher = await queries.get_user(callback_data.id)
     tests = await queries.get_tests_by_teacher(callback_data.id)
     
     if not tests:
-        await callback.answer(f"😔 У вчителя {teacher['name']} ще немає публічних тестів.", show_alert=True)
+        await callback.answer(i18n("no_tests_for_teacher", lang, name=teacher["name"]), show_alert=True)
         return
     
     await callback.message.edit_text(
-        f"👨‍🏫 *Тести вчителя {teacher['name']}* ({len(tests)}):",
-        reply_markup=tests_keyboard(tests),
+        i18n("teacher_tests_title", lang, name=teacher["name"], count=len(tests)),
+        reply_markup=tests_keyboard(tests, lang=lang),
         parse_mode="Markdown",
     )
     await state.set_state(StudentStates.browsing_tests)
@@ -489,7 +584,7 @@ async def back_from_search_menu(callback: CallbackQuery, state: FSMContext) -> N
     lang = user.get("language", "uk") if user else "uk"
     
     await callback.message.edit_text(
-        "📚 *Меню студента*",
+        i18n("student_menu_title", lang),
         reply_markup=student_menu(lang),
         parse_mode="Markdown",
     )
@@ -500,10 +595,11 @@ async def back_from_search_menu(callback: CallbackQuery, state: FSMContext) -> N
 @router.callback_query(StudentStates.filtering_by_subject, BackCallback.filter())
 async def back_from_subject_filter(callback: CallbackQuery, state: FSMContext) -> None:
     """Return to search menu from subject filter."""
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     await callback.message.edit_text(
-        "🔍 *Пошук тестів*\n\n"
-        "Оберіть як шукати:",
-        reply_markup=search_menu_keyboard(),
+        i18n("search_title", lang),
+        reply_markup=search_menu_keyboard(lang),
         parse_mode="Markdown",
     )
     await state.set_state(StudentStates.searching_tests)
@@ -513,10 +609,11 @@ async def back_from_subject_filter(callback: CallbackQuery, state: FSMContext) -
 @router.callback_query(StudentStates.filtering_by_teacher, BackCallback.filter())
 async def back_from_teacher_filter(callback: CallbackQuery, state: FSMContext) -> None:
     """Return to search menu from teacher filter."""
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     await callback.message.edit_text(
-        "🔍 *Пошук тестів*\n\n"
-        "Оберіть як шукати:",
-        reply_markup=search_menu_keyboard(),
+        i18n("search_title", lang),
+        reply_markup=search_menu_keyboard(lang),
         parse_mode="Markdown",
     )
     await state.set_state(StudentStates.searching_tests)
@@ -526,10 +623,12 @@ async def back_from_teacher_filter(callback: CallbackQuery, state: FSMContext) -
 @router.callback_query(StudentStates.browsing_tests, BackCallback.filter())
 async def back_from_test_selection(callback: CallbackQuery, state: FSMContext) -> None:
     """Return to subjects from test selection."""
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     subjects = await queries.get_subjects(callback.from_user.id)
     await callback.message.edit_text(
-        "📚 *Оберіть предмет:*",
-        reply_markup=subjects_keyboard(subjects),
+        i18n("select_subject", lang),
+        reply_markup=subjects_keyboard(subjects, lang=lang),
         parse_mode="Markdown",
     )
     await state.set_state(StudentStates.browsing_subjects)

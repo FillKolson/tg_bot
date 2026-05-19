@@ -25,6 +25,7 @@ class TeacherStates(StatesGroup):
 
     # Managing existing tests
     viewing_tests_and_results = State()
+    viewing_tests_by_subject = State()
 
     # Edit test
     editing_test = State()              # viewing edit menu

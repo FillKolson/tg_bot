@@ -8,9 +8,10 @@ from typing import Optional
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from db import queries
+from config.i18n import i18n
 from keyboards.callbacks import (
     SubjectCallback, VisibilityCallback, OptionCallback,
     QuestionNextCallback, DoneOptionsCallback, NewSubjectCallback,
@@ -22,8 +23,9 @@ from keyboards.callbacks import (
 from keyboards.keyboards import (
     teacher_menu, subjects_keyboard, visibility_keyboard,
     options_input_keyboard, correct_option_keyboard,
-    question_next_keyboard, my_tests_keyboard, answer_visibility_keyboard,
-    attempts_keyboard, limited_attempts_keyboard,
+    question_next_keyboard, my_tests_keyboard, my_tests_subjects_keyboard,
+    subject_tests_list_keyboard,
+    answer_visibility_keyboard, attempts_keyboard, limited_attempts_keyboard,
     edit_test_menu_keyboard, edit_questions_list_keyboard, edit_options_list_keyboard,
     statistics_keyboard, confirm_delete_keyboard, back_keyboard,
 )
@@ -45,7 +47,8 @@ async def _require_teacher(message_or_cq) -> Optional[dict]:
     )
     user = await queries.get_user(tid)
     if not user or user["role"] != "teacher":
-        text = "⛔ Ця функція доступна лише для вчителів."
+        lang = user.get("language", "uk") if user else "uk"
+        text = i18n("teacher_only", lang)
         if isinstance(message_or_cq, CallbackQuery):
             await message_or_cq.answer(text, show_alert=True)
         else:
@@ -67,6 +70,55 @@ def _question_summary(data: dict) -> str:
     return f"Питань збережено: {len(qs)}"
 
 
+def _rating_for_average(avg: float) -> str:
+    if avg >= 90:
+        return "✅ Високий рівень знань"
+    if avg >= 75:
+        return "👍 Добре"
+    if avg >= 60:
+        return "⚠️ Потрібно покращити"
+    return "📌 Є над чим працювати"
+
+
+def _format_subject_statistics(stats: list[dict]) -> str:
+    total_subjects = len(stats)
+    total_tests = sum(s["test_count"] for s in stats)
+    total_sessions = sum(s["total_sessions"] for s in stats)
+    weighted_avg = (
+        round(
+            sum(s["average_score"] * s["total_sessions"] for s in stats) / total_sessions,
+            1,
+        )
+        if total_sessions else 0
+    )
+
+    lines = ["📊 *Статистика по предметах*", ""]
+    for stat in stats:
+        avg_text = f"{stat['average_score']}%" if stat["total_sessions"] else "—"
+        summary = (
+            _rating_for_average(stat["average_score"])
+            if stat["total_sessions"] else "📌 Ще немає проходжень"
+        )
+        lines.extend([
+            f"*{stat['subject_name']}*",
+            f"   • Тестів: {stat['test_count']}",
+            f"   • Проходжень: {stat['total_sessions']}",
+            f"   • Середній бал: {avg_text}",
+            f"   {summary}",
+            "",
+        ])
+
+    overall_average = f"{weighted_avg}%" if total_sessions else "—"
+    lines.extend([
+        "🧾 *Усього*",
+        f"   • Предметів: {total_subjects}",
+        f"   • Тестів: {total_tests}",
+        f"   • Проходжень: {total_sessions}",
+        f"   • Середній бал: {overall_average}",
+    ])
+    return "\n".join(lines)
+
+
 # Step 1 - Enter title
 
 @router.message(F.text.in_(["➕ Створити тест", "➕ Create Test"]))
@@ -76,19 +128,20 @@ async def create_test_start(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
     await state.set_state(TeacherStates.entering_title)
+    lang = user.get("language", "uk")
     await message.answer(
-        "📝 *Майстер створення тесту*\n\n"
-        "*Крок 1/4* — Введіть назву тесту:\n\n"
-        "_/cancel — скасувати_",
+        i18n("create_test_wizard", lang),
         parse_mode="Markdown",
     )
 
 
 @router.message(TeacherStates.entering_title, F.text)
 async def enter_title(message: Message, state: FSMContext) -> None:
+    user = await queries.get_user(message.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     title = message.text.strip()
     if len(title) < 3:
-        await message.answer("⚠️ Назва занадто коротка (мін. 3 символи):")
+        await message.answer(i18n("title_too_short", lang))
         return
     await state.update_data(title=title, questions=[])
 
@@ -97,15 +150,13 @@ async def enter_title(message: Message, state: FSMContext) -> None:
 
     if subjects:
         await message.answer(
-            f"✅ Назва: *{title}*\n\n"
-            "*Крок 2/4* — Оберіть предмет або створіть новий:",
-            reply_markup=subjects_keyboard(subjects, for_teacher=True),
+            i18n("title_confirmed", lang, title=title),
+            reply_markup=subjects_keyboard(subjects, for_teacher=True, lang=lang),
             parse_mode="Markdown",
         )
     else:
         await message.answer(
-            f"✅ Назва: *{title}*\n\n"
-            "*Крок 2/4* — Предметів ще немає. Введіть назву нового предмету:",
+            i18n("no_subjects", lang, title=title),
             parse_mode="Markdown",
         )
         await state.set_state(TeacherStates.creating_subject)
@@ -115,11 +166,12 @@ async def enter_title(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(TeacherStates.selecting_subject, SubjectCallback.filter())
 async def select_subject(callback: CallbackQuery, callback_data: SubjectCallback, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     subject = await queries.get_subject(callback_data.id)
     await state.update_data(subject_id=callback_data.id, subject_name=subject["name"])
     await callback.message.edit_text(
-        f"✅ Предмет: *{subject['name']}*\n\n"
-        "*Крок 3/6* — Введіть короткий опис тесту\n_(або надішліть /skip, щоб пропустити)_",
+        i18n("subject_confirmed", lang, subject=subject["name"]),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.entering_description)
@@ -128,22 +180,25 @@ async def select_subject(callback: CallbackQuery, callback_data: SubjectCallback
 
 @router.callback_query(TeacherStates.selecting_subject, NewSubjectCallback.filter())
 async def new_subject_prompt(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.message.edit_text("📖 Введіть назву нового предмету:")
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+    await callback.message.edit_text(i18n("new_subject_prompt", lang))
     await state.set_state(TeacherStates.creating_subject)
     await callback.answer()
 
 
 @router.message(TeacherStates.creating_subject, F.text)
 async def create_new_subject(message: Message, state: FSMContext) -> None:
+    user = await queries.get_user(message.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     name = message.text.strip()
     if len(name) < 2:
-        await message.answer("⚠️ Занадто коротка назва. Спробуйте ще раз:")
+        await message.answer(i18n("title_too_short_subject", lang))
         return
     subject = await queries.create_subject(name)
     await state.update_data(subject_id=subject["id"], subject_name=subject["name"])
     await message.answer(
-        f"✅ Предмет *«{name}»* створено!\n\n"
-        "*Крок 3/4* — Введіть короткий опис тесту\n_(або /skip для пропуску)_",
+        i18n("subject_created", lang, name=name),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.entering_description)
@@ -153,15 +208,20 @@ async def create_new_subject(message: Message, state: FSMContext) -> None:
 
 @router.message(TeacherStates.entering_description, F.text)
 async def enter_description(message: Message, state: FSMContext) -> None:
+    user = await queries.get_user(message.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     desc: Optional[str] = None
     if message.text.strip().lower() != "/skip":
         desc = message.text.strip()
 
     await state.update_data(description=desc)
+    if desc:
+        text = i18n("description_confirmed", lang, description=desc)
+    else:
+        text = i18n("description_skipped", lang)
     await message.answer(
-        (f"✅ Опис: _{desc}_\n\n" if desc else "⏭ Опис пропущено.\n\n")
-        + "*Крок 4/6* — Чи показувати студентам правильність відповідей?",
-        reply_markup=answer_visibility_keyboard(),
+        text,
+        reply_markup=answer_visibility_keyboard(lang),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.choosing_answer_visibility)
@@ -171,14 +231,15 @@ async def enter_description(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(TeacherStates.choosing_answer_visibility, AnswerVisibilityCallback.filter())
 async def choose_answer_visibility(callback: CallbackQuery, callback_data: AnswerVisibilityCallback, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     show_answers = callback_data.value == "yes"
     await state.update_data(show_answer_correctness=show_answers)
     
-    visibility_text = "✅ Показувати" if show_answers else "❌ Приховувати"
+    visibility_text = i18n("show_answers_yes", lang) if show_answers else i18n("show_answers_no", lang)
     await callback.message.edit_text(
-        f"✅ Правильність відповідей: {visibility_text}\n\n"
-        "*Крок 5/6* — Можливість повторного проходження тесту:",
-        reply_markup=attempts_keyboard(),
+        i18n("answers_visibility_confirmed", lang, visibility=visibility_text),
+        reply_markup=attempts_keyboard(lang),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.choosing_attempts)
@@ -189,19 +250,20 @@ async def choose_answer_visibility(callback: CallbackQuery, callback_data: Answe
 
 @router.callback_query(TeacherStates.choosing_attempts, AttemptsCallback.filter())
 async def choose_attempts(callback: CallbackQuery, callback_data: AttemptsCallback, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     if callback_data.value == "unlimited":
         await state.update_data(max_attempts=None)
         await callback.message.edit_text(
-            "✅ Студенти можуть повторно проходити цей тест необмежену кількість разів.\n\n"
-            "*Крок 6/6* — Тип доступу:",
-            reply_markup=visibility_keyboard(),
+            i18n("attempts_unlimited_confirmed", lang),
+            reply_markup=visibility_keyboard(lang),
             parse_mode="Markdown",
         )
         await state.set_state(TeacherStates.choosing_visibility)
     else:
         await callback.message.edit_text(
-            "Скільки спроб дозволити студентам?",
-            reply_markup=limited_attempts_keyboard(),
+            i18n("attempts_limited_prompt", lang),
+            reply_markup=limited_attempts_keyboard(lang),
             parse_mode="Markdown",
         )
         await state.set_state(TeacherStates.choosing_limited_attempts)
@@ -210,14 +272,15 @@ async def choose_attempts(callback: CallbackQuery, callback_data: AttemptsCallba
 
 @router.callback_query(TeacherStates.choosing_limited_attempts, LimitedAttemptsCallback.filter())
 async def choose_limited_attempts(callback: CallbackQuery, callback_data: LimitedAttemptsCallback, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     max_att = callback_data.count
     await state.update_data(max_attempts=max_att)
     
     attempts_text = "1 спроба" if max_att == 1 else f"{max_att} спроб"
     await callback.message.edit_text(
-        f"✅ Максимум спроб: *{attempts_text}*\n\n"
-        "*Крок 6/6* — Тип доступу:",
-        reply_markup=visibility_keyboard(),
+        i18n("attempts_limit_confirmed", lang, attempts=attempts_text),
+        reply_markup=visibility_keyboard(lang),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.choosing_visibility)
@@ -228,23 +291,20 @@ async def choose_limited_attempts(callback: CallbackQuery, callback_data: Limite
 
 @router.callback_query(TeacherStates.choosing_visibility, VisibilityCallback.filter())
 async def choose_visibility(callback: CallbackQuery, callback_data: VisibilityCallback, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     is_public = callback_data.value == "public"
     access_code = None if is_public else _generate_code()
     await state.update_data(is_public=is_public, access_code=access_code)
 
     if is_public:
-        note = "🌐 Тест буде публічним — студенти знайдуть його в меню."
+        note = i18n("visibility_note_public", lang)
     else:
-        note = (
-            f"🔒 Тест буде приватним.\n"
-            f"Код доступу: `{access_code}`\n"
-            f"_(поділіться ним зі студентами)_"
-        )
+        note = i18n("visibility_note_private", lang, code=access_code)
 
     await callback.message.edit_text(
         f"{note}\n\n"
-        "✏️ *Тепер додайте питання.*\n\n"
-        "Введіть текст *першого питання*:",
+        + i18n("add_questions_prompt", lang),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.entering_question_text)
@@ -255,14 +315,15 @@ async def choose_visibility(callback: CallbackQuery, callback_data: VisibilityCa
 
 @router.message(TeacherStates.entering_question_text, F.text)
 async def enter_question_text(message: Message, state: FSMContext) -> None:
+    user = await queries.get_user(message.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     q_text = message.text.strip()
     if len(q_text) < 3:
-        await message.answer("⚠️ Текст питання занадто короткий:")
+        await message.answer(i18n("question_too_short", lang))
         return
     await state.update_data(current_question={"text": q_text, "options": []})
     await message.answer(
-        f"❓ Питання: *{q_text}*\n\n"
-        f"Введіть *варіант відповіді 1* (максимум {MAX_OPTIONS}):",
+        i18n("question_confirmed", lang, text=q_text, max=MAX_OPTIONS),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.entering_option)
@@ -272,13 +333,15 @@ async def enter_question_text(message: Message, state: FSMContext) -> None:
 
 @router.message(TeacherStates.entering_option, F.text)
 async def enter_option(message: Message, state: FSMContext) -> None:
+    user = await queries.get_user(message.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     data = await state.get_data()
     cq = data.get("current_question", {})
     opts: list[str] = cq.get("options", [])
 
     opt_text = message.text.strip()
     if not opt_text:
-        await message.answer("⚠️ Варіант не може бути порожнім:")
+        await message.answer(i18n("option_empty", lang))
         return
 
     opts.append(opt_text)
@@ -290,30 +353,29 @@ async def enter_option(message: Message, state: FSMContext) -> None:
     if n >= MAX_OPTIONS:
         # Auto-proceed to marking correct
         await message.answer(
-            _options_list(opts)
-            + "\n\n*Максимум варіантів досягнуто.*\n"
-            "🎯 Оберіть *правильну відповідь*:",
+            i18n("options_max_reached", lang, options=_options_list(opts).replace("📋 Варіанти:\n", "")),
             reply_markup=correct_option_keyboard(opts),
             parse_mode="Markdown",
         )
         await state.set_state(TeacherStates.marking_correct)
     else:
-        remaining = MAX_OPTIONS - n
         await message.answer(
             _options_list(opts)
-            + f"\n\n➕ Введіть варіант {n + 1}"
-            + (f" (або натисніть «Готово», якщо варіантів достатньо):" if n >= 2 else ":"),
-            reply_markup=options_input_keyboard(opts),
+            + "\n\n"
+            + i18n("option_prompt_or_done", lang, num=n + 1),
+            reply_markup=options_input_keyboard(opts, lang),
             parse_mode="Markdown",
         )
 
 
 @router.callback_query(TeacherStates.entering_option, DoneOptionsCallback.filter())
 async def done_options(callback: CallbackQuery, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     data = await state.get_data()
     opts = data["current_question"]["options"]
     if len(opts) < 2:
-        await callback.answer("⚠️ Потрібно щонайменше 2 варіанти!", show_alert=True)
+        await callback.answer(i18n("min_options", lang), show_alert=True)
         return
     await callback.message.edit_text(
         _options_list(opts) + "\n\n🎯 Оберіть *правильну відповідь*:",
@@ -328,6 +390,8 @@ async def done_options(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(TeacherStates.marking_correct, OptionCallback.filter())
 async def mark_correct(callback: CallbackQuery, callback_data: OptionCallback, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     data = await state.get_data()
     cq = data["current_question"]
     opts = cq["options"]
@@ -349,13 +413,11 @@ async def mark_correct(callback: CallbackQuery, callback_data: OptionCallback, s
     q_num = len(questions)
 
     await callback.message.edit_text(
-        f"✅ *Питання {q_num} збережено!*\n"
-        f"Правильна відповідь: _{correct_text}_\n\n"
-        "Що далі?",
-        reply_markup=question_next_keyboard(),
+        i18n("question_saved", lang, num=q_num, correct=correct_text),
+        reply_markup=question_next_keyboard(lang),
         parse_mode="Markdown",
     )
-    await callback.answer("Збережено!")
+    await callback.answer(i18n("saved_notification", lang))
 
 
 # Questions loop - continue or finish
@@ -364,10 +426,12 @@ async def mark_correct(callback: CallbackQuery, callback_data: OptionCallback, s
 @router.callback_query(QuestionNextCallback.filter())
 async def question_next(callback: CallbackQuery, callback_data: QuestionNextCallback, state: FSMContext) -> None:
     if callback_data.action == "add":
+        user = await queries.get_user(callback.from_user.id)
+        lang = user.get("language", "uk") if user else "uk"
         data = await state.get_data()
         n = len(data.get("questions", []))
         await callback.message.edit_text(
-            f"✏️ Введіть текст *питання {n + 1}*:",
+            i18n("enter_question_text", lang, num=n + 1),
             parse_mode="Markdown",
         )
         await state.set_state(TeacherStates.entering_question_text)
@@ -379,9 +443,11 @@ async def question_next(callback: CallbackQuery, callback_data: QuestionNextCall
 async def _finish_test(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     questions = data.get("questions", [])
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
 
     if not questions:
-        await callback.answer("⚠️ Додайте хоча б одне питання!", show_alert=True)
+        await callback.answer(i18n("no_questions_error", lang), show_alert=True)
         return
 
     # Save test to DB
@@ -410,24 +476,31 @@ async def _finish_test(callback: CallbackQuery, state: FSMContext) -> None:
         attempts_info = "♾️ Спроби: *Необмежено*\n"
 
     await callback.message.edit_text(
-        "🎉 *Тест успішно створено!*\n\n"
-        f"📝 Назва: *{data['title']}*\n"
-        f"📖 Предмет: *{data['subject_name']}*\n"
-        f"❓ Питань: *{len(questions)}*\n"
-        f"{'🌐 Публічний' if data['is_public'] else '🔒 Приватний'}\n"
-        f"{attempts_info}"
-        f"{code_line}",
+        i18n(
+            "test_created",
+            lang,
+            title=data["title"],
+            subject=data["subject_name"],
+            count=len(questions),
+            access_line=("🌐 Публічний\n" if data["is_public"] else "🔒 Приватний\n") + attempts_info + code_line,
+            public_note="",
+        ),
         parse_mode="Markdown",
     )
-    await callback.message.answer("Повернення до меню:", reply_markup=teacher_menu())
+    await callback.message.answer(i18n("back_to_menu", lang), reply_markup=teacher_menu(lang))
     await callback.answer()
 
 
 # Tests and Results
 
-@router.message(F.text == "📋 Мої тести")
-@router.message(F.text == "📊 Результати")
-@router.message(F.text == "📋 Мої тести та результати")
+@router.message(F.text.in_([
+    "📋 Мої тести",
+    "📊 Результати",
+    "📋 Мої тести та результати",
+    "📋 My Tests",
+    "📊 Results",
+    "📋 My Tests & Results",
+]))
 async def view_tests_and_results(message: Message, state: FSMContext) -> None:
     """Combined handler for both 'Мої тести' and 'Результати' buttons."""
     user = await _require_teacher(message)
@@ -444,14 +517,19 @@ async def view_tests_and_results(message: Message, state: FSMContext) -> None:
         )
         return
 
+    # Store tests in state for filtering later
+    await state.update_data(all_tests=tests)
+    
     await message.answer(
         f"📋 *Ваші тести* ({len(tests)}):\n\n"
-        "Натисніть назву — переглянути результати.\n"
-        "🗑 — видалити тест.",
-        reply_markup=my_tests_keyboard(tests),
+        "Оберіть предмет, щоб переглянути тести:",
+        reply_markup=my_tests_subjects_keyboard(tests),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.viewing_tests_and_results)
+
+
+    await callback.answer()
 
 
 @router.message(F.text == "📊 Статистика")
@@ -472,15 +550,51 @@ async def view_statistics(message: Message, state: FSMContext) -> None:
         )
         return
     
-    text = "📊 *Статистика по предметах*\n\n"
-    for stat in stats:
-        text += (
-            f"📖 *{stat['subject_name']}*\n"
-            f"   Тестів: {stat['test_count']}\n"
-            f"   Середній бал: {stat['average_score']:.1f}%\n\n"
-        )
-    
+    text = _format_subject_statistics(stats)
     await message.answer(text, parse_mode="Markdown")
+
+
+@router.callback_query(TeacherStates.viewing_tests_and_results, SubjectCallback.filter())
+async def view_tests_by_subject(callback: CallbackQuery, callback_data: SubjectCallback, state: FSMContext) -> None:
+    """Show tests for a selected subject."""
+    user = await _require_teacher(callback)
+    if not user:
+        return
+
+    tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
+    subject_tests = [t for t in tests if t.get("subject_id") == callback_data.id]
+    if not subject_tests:
+        await callback.answer("⚠️ Тести для цього предмету не знайдено.", show_alert=True)
+        return
+
+    subject_name = subject_tests[0].get("subjects", {}).get("name", "—")
+    keyboard = subject_tests_list_keyboard(subject_tests)
+
+    await callback.message.edit_text(
+        f"📋 *Тести з предмету* {subject_name} ({len(subject_tests)}):\n\n"
+        "Натисніть назву — відкрити меню дій для тесту.",
+        reply_markup=keyboard,
+        parse_mode="Markdown",
+    )
+    await state.set_state(TeacherStates.viewing_tests_and_results)
+    await callback.answer()
+
+
+@router.callback_query(TeacherStates.viewing_tests_and_results, BackCallback.filter(F.to == "teacher_tests"))
+async def back_to_test_subjects(callback: CallbackQuery, state: FSMContext) -> None:
+    user = await _require_teacher(callback)
+    if not user:
+        return
+
+    tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
+    await callback.message.edit_text(
+        f"📋 *Ваші тести* ({len(tests)}):\n\n"
+        "Оберіть предмет, щоб переглянути тести:",
+        reply_markup=my_tests_subjects_keyboard(tests),
+        parse_mode="Markdown",
+    )
+    await state.set_state(TeacherStates.viewing_tests_and_results)
+    await callback.answer()
 
 
 @router.callback_query(TeacherStates.viewing_statistics, StatisticsCallback.filter())
@@ -499,15 +613,7 @@ async def show_statistics(callback: CallbackQuery, callback_data: StatisticsCall
         await callback.answer()
         return
     
-    text = "📊 *Статистика по предметах*\n\n"
-    for stat in stats:
-        text += (
-            f"📖 *{stat['subject_name']}*\n"
-            f"   Тестів: {stat['test_count']}\n"
-            f"   Проходжень: {stat['total_sessions']}\n"
-            f"   Середній бал: {stat['average_score']}%\n\n"
-        )
-    
+    text = _format_subject_statistics(stats)
     await callback.message.edit_text(
         text,
         reply_markup=back_keyboard("teacher_menu"),
@@ -533,6 +639,23 @@ async def handle_test_action(callback: CallbackQuery, callback_data: TestCallbac
         await _show_results(callback, callback_data.id, state)
     elif callback_data.action == "delete":
         await _delete_test(callback, callback_data.id, state)
+    elif callback_data.action == "open":
+        # Show action menu for the selected test
+        test = await queries.get_test(callback_data.id)
+        if not test:
+            await callback.answer("⚠️ Тест не знайдено.", show_alert=True)
+            return
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Переглянути результати", callback_data=TestCallback(id=callback_data.id, action="results").pack())],
+            [InlineKeyboardButton(text="✏️ Редагувати", callback_data=EditTestCallback(id=callback_data.id, action="menu").pack())],
+            [InlineKeyboardButton(text="🗑 Видалити", callback_data=TestCallback(id=callback_data.id, action="delete").pack())],
+            [InlineKeyboardButton(text="⬅️ До списку предметів", callback_data=BackCallback(to="teacher_tests").pack())],
+        ])
+        await callback.message.edit_text(
+            f"📝 *{test['title']}*\n\nОберіть дію:",
+            reply_markup=kb,
+            parse_mode="Markdown",
+        )
     await callback.answer()
 
 
@@ -576,11 +699,13 @@ async def _delete_test(callback: CallbackQuery, test_id: int, state: FSMContext)
 @router.callback_query(TeacherStates.confirming_delete_test, ConfirmDeleteCallback.filter())
 async def confirm_delete_action(callback: CallbackQuery, callback_data: ConfirmDeleteCallback, state: FSMContext) -> None:
     """Handle delete confirmation."""
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     data = await state.get_data()
     test_id = data.get("deleting_test_id")
     
     if not test_id:
-        await callback.answer("⚠️ Помилка: тест не знайдено.", show_alert=True)
+        await callback.answer(i18n("error_test_not_found", lang), show_alert=True)
         return
     
     if callback_data.action == "yes":
@@ -589,33 +714,37 @@ async def confirm_delete_action(callback: CallbackQuery, callback_data: ConfirmD
         if deleted:
             user = await queries.get_user(callback.from_user.id)
             tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
+            await state.update_data(all_tests=tests)
             await callback.message.edit_text(
-                f"📋 *Ваші тести* ({len(tests)}):",
-                reply_markup=my_tests_keyboard(tests),
+                f"📋 *Ваші тести* ({len(tests)}):\n\n"
+                "Оберіть предмет, щоб переглянути тести:",
+                reply_markup=my_tests_subjects_keyboard(tests),
                 parse_mode="Markdown",
             )
-            await callback.answer("🗑 Тест видалено.")
+            await callback.answer(i18n("test_deleted", lang))
         else:
             user = await queries.get_user(callback.from_user.id)
             tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
+            await state.update_data(all_tests=tests)
             await callback.message.edit_text(
-                f"📋 *Ваші тести* ({len(tests)}):",
-                reply_markup=my_tests_keyboard(tests),
+                f"📋 *Ваші тести* ({len(tests)}):\n\n"
+                "Оберіть предмет, щоб переглянути тести:",
+                reply_markup=my_tests_subjects_keyboard(tests),
                 parse_mode="Markdown",
             )
-            await callback.answer("⚠️ Помилка.")
+            await callback.answer(i18n("delete_error", lang))
     else:
         # Cancel deletion
         user = await queries.get_user(callback.from_user.id)
         tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
+        await state.update_data(all_tests=tests)
         await callback.message.edit_text(
             f"📋 *Ваші тести* ({len(tests)}):\n\n"
-            "Натисніть назву — переглянути результати.\n"
-            "🗑 — видалити тест.",
-            reply_markup=my_tests_keyboard(tests),
+            "Оберіть предмет, щоб переглянути тести:",
+            reply_markup=my_tests_subjects_keyboard(tests),
             parse_mode="Markdown",
         )
-        await callback.answer("❌ Скасовано.")
+        await callback.answer(i18n("cancelled", lang))
         await state.set_state(TeacherStates.viewing_tests_and_results)
 
 
@@ -624,11 +753,11 @@ async def back_from_delete_confirmation(callback: CallbackQuery, state: FSMConte
     """Return to tests list from delete confirmation."""
     user = await queries.get_user(callback.from_user.id)
     tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
+    await state.update_data(all_tests=tests)
     await callback.message.edit_text(
         f"📋 *Ваші тести* ({len(tests)}):\n\n"
-        "Натисніть назву — переглянути результати.\n"
-        "🗑 — видалити тест.",
-        reply_markup=my_tests_keyboard(tests),
+        "Оберіть предмет, щоб переглянути тести:",
+        reply_markup=my_tests_subjects_keyboard(tests),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.viewing_tests_and_results)
@@ -636,6 +765,25 @@ async def back_from_delete_confirmation(callback: CallbackQuery, state: FSMConte
 
 
 # Helpers
+
+def _group_teacher_tests_by_subject_text(tests: list[dict]) -> str:
+    grouped: dict[str, list[dict]] = {}
+    for test in tests:
+        subject = test.get("subjects", {}).get("name", "Без предмету")
+        grouped.setdefault(subject, []).append(test)
+
+    lines = [f"📋 *Ваші тести* ({len(tests)}):", ""]
+    for subject in sorted(grouped):
+        subject_tests = sorted(grouped[subject], key=lambda t: t.get("title", ""))
+        lines.append(f"📖 *{subject}* — {len(subject_tests)} тест(ів)")
+        for test in subject_tests:
+            badge = "🌐" if test.get("is_public") else "🔒"
+            lines.append(f"   {badge} *{test.get('title', '—')}*")
+        lines.append("")
+
+    lines.append("Натисніть назву — переглянути результати.")
+    lines.append("🗑 — видалити тест.")
+    return "\n".join(lines)
 
 def _options_list(opts: list[str]) -> str:
     return "📋 Варіанти:\n" + "\n".join(f"  {i + 1}. {o}" for i, o in enumerate(opts))
@@ -711,7 +859,7 @@ async def edit_test_title_save(message: Message, state: FSMContext) -> None:
     
     # Return to edit test menu
     await message.answer(
-        f"� *Редагування тесту #{test_id}*\n\n"
+        f"✏️ *Редагування тесту #{test_id}*\n\n"
         "Оберіть, що хочете змінити:",
         reply_markup=edit_test_menu_keyboard(test_id),
         parse_mode="Markdown",
@@ -750,7 +898,7 @@ async def edit_test_description_save(message: Message, state: FSMContext) -> Non
     
     # Return to edit test menu
     await message.answer(
-        f"� *Редагування тесту #{test_id}*\n\n"
+        f"✏️ *Редагування тесту #{test_id}*\n\n"
         "Оберіть, що хочете змінити:",
         reply_markup=edit_test_menu_keyboard(test_id),
         parse_mode="Markdown",
@@ -761,13 +909,15 @@ async def edit_test_description_save(message: Message, state: FSMContext) -> Non
 @router.callback_query(TeacherStates.editing_test, EditTestCallback.filter(F.action == "vis"))
 async def edit_test_visibility_prompt(callback: CallbackQuery, callback_data: EditTestCallback, state: FSMContext) -> None:
     """Ask for new visibility."""
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     test = await queries.get_test(callback_data.id)
     vis_text = "Публічний" if test["is_public"] else f"Приватний (код: {test['access_code']})"
     
     await callback.message.edit_text(
         f"🔍 Поточна видимість: {vis_text}\n\n"
         "Оберіть нову видимість:",
-        reply_markup=visibility_keyboard(),
+        reply_markup=visibility_keyboard(lang),
         parse_mode="Markdown",
     )
     await state.update_data(editing_test_id=callback_data.id)
@@ -795,9 +945,9 @@ async def edit_test_visibility_save(callback: CallbackQuery, callback_data: Visi
     
     # Return to edit test menu
     await callback.message.answer(
-        f"� *Редагування тесту #{test['id']}*\n\n"
+        f"✏️ *Редагування тесту #{test_id}*\n\n"
         "Оберіть, що хочете змінити:",
-        reply_markup=edit_test_menu_keyboard(test['id']),
+        reply_markup=edit_test_menu_keyboard(test_id),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.editing_test)
@@ -806,13 +956,15 @@ async def edit_test_visibility_save(callback: CallbackQuery, callback_data: Visi
 @router.callback_query(TeacherStates.editing_test, EditTestCallback.filter(F.action == "attempts"))
 async def edit_test_attempts_prompt(callback: CallbackQuery, callback_data: EditTestCallback, state: FSMContext) -> None:
     """Ask for new attempts limit."""
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     test = await queries.get_test(callback_data.id)
     att_text = f"{test['max_attempts']} спроб" if test['max_attempts'] else "Необмежено"
     
     await callback.message.edit_text(
         f"⏱️ Поточне обмеження: {att_text}\n\n"
         "Оберіть нове:",
-        reply_markup=attempts_keyboard(),
+        reply_markup=attempts_keyboard(lang),
         parse_mode="Markdown",
     )
     await state.update_data(editing_test_id=callback_data.id)
@@ -823,6 +975,8 @@ async def edit_test_attempts_prompt(callback: CallbackQuery, callback_data: Edit
 @router.callback_query(TeacherStates.editing_test_attempts, AttemptsCallback.filter())
 async def edit_test_attempts_select(callback: CallbackQuery, callback_data: AttemptsCallback, state: FSMContext) -> None:
     """Select attempts limit."""
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     if callback_data.value == "unlimited":
         data = await state.get_data()
         test_id = data["editing_test_id"]
@@ -836,7 +990,7 @@ async def edit_test_attempts_select(callback: CallbackQuery, callback_data: Atte
     else:
         await callback.message.edit_text(
             "Скільки спроб дозволити?",
-            reply_markup=limited_attempts_keyboard(),
+            reply_markup=limited_attempts_keyboard(lang),
             parse_mode="Markdown",
         )
         await state.set_state(TeacherStates.editing_test_limited_attempts)
@@ -860,7 +1014,7 @@ async def edit_test_limited_attempts_save(callback: CallbackQuery, callback_data
     
     # Return to edit test menu
     await callback.message.answer(
-        f"� *Редагування тесту #{test_id}*\n\n"
+        f"✏️ *Редагування тесту #{test_id}*\n\n"
         "Оберіть, що хочете змінити:",
         reply_markup=edit_test_menu_keyboard(test_id),
         parse_mode="Markdown",
@@ -920,10 +1074,12 @@ async def back_from_edit_menu(callback: CallbackQuery, state: FSMContext) -> Non
     """Return to tests list from edit menu."""
     user = await queries.get_user(callback.from_user.id)
     tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
+    await state.update_data(all_tests=tests)
     
     await callback.message.edit_text(
-        f"📋 *Ваші тести* ({len(tests)}):",
-        reply_markup=my_tests_keyboard(tests),
+        f"📋 *Ваші тести* ({len(tests)}):\n\n"
+        "Оберіть предмет, щоб переглянути тести:",
+        reply_markup=my_tests_subjects_keyboard(tests),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.viewing_tests_and_results)
