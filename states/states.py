@@ -7,6 +7,13 @@ class AuthStates(StatesGroup):
     entering_name = State()
 
 
+class ProfileStates(StatesGroup):
+    viewing = State()
+    choosing_action = State()
+    changing_language = State()
+    changing_name = State()
+
+
 class TeacherStates(StatesGroup):
     # Create test wizard
     entering_title = State()

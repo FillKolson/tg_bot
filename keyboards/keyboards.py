@@ -14,7 +14,7 @@ from .callbacks import (
     AnswerVisibilityCallback, AttemptsCallback, LimitedAttemptsCallback,
     EditTestCallback, EditQuestionCallback, EditOptionCallback,
     SearchCallback, TeacherFilterCallback, StatisticsCallback, ConfirmDeleteCallback,
-    TeacherTestsSubjectCallback,
+    TeacherTestsSubjectCallback, ProfileCallback,
 )
 
 
@@ -46,6 +46,7 @@ def teacher_menu(lang: str = "uk") -> ReplyKeyboardMarkup:
             [KeyboardButton(text=i18n("menu_create_test", lang))],
             [KeyboardButton(text=i18n("menu_my_tests", lang))],
             [KeyboardButton(text=i18n("menu_statistics", lang))],
+            [KeyboardButton(text=i18n("menu_profile", lang))],
         ],
         resize_keyboard=True,
     )
@@ -58,6 +59,7 @@ def student_menu(lang: str = "uk") -> ReplyKeyboardMarkup:
             [KeyboardButton(text=i18n("menu_subjects", lang))],
             [KeyboardButton(text=i18n("menu_enter_code", lang)), KeyboardButton(text=i18n("menu_my_results", lang))],
             [KeyboardButton(text=i18n("menu_search", lang))],
+            [KeyboardButton(text=i18n("menu_profile", lang))],
         ],
         resize_keyboard=True,
     )
@@ -65,6 +67,28 @@ def student_menu(lang: str = "uk") -> ReplyKeyboardMarkup:
 
 def remove_keyboard() -> ReplyKeyboardRemove:
     return ReplyKeyboardRemove()
+
+
+# Profile
+
+def profile_menu_keyboard(lang: str = "uk") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=i18n("profile_change_language", lang),
+                              callback_data=ProfileCallback(action="change_lang").pack())],
+        [InlineKeyboardButton(text=i18n("profile_change_name", lang),
+                              callback_data=ProfileCallback(action="change_name").pack())],
+        [InlineKeyboardButton(text=i18n("back", lang),
+                              callback_data=BackCallback(to="menu").pack())],
+    ])
+
+
+def language_select_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=i18n("lang_uk", "uk"),
+                             callback_data=LangCallback(value="uk").pack()),
+        InlineKeyboardButton(text=i18n("lang_en", "uk"),
+                             callback_data=LangCallback(value="en").pack()),
+    ]])
 
 
 # Subject list

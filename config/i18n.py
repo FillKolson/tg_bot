@@ -162,6 +162,15 @@ UK = {
     "menu_enter_code": "🔑 Ввести код",
     "menu_my_results": "📈 Мої результати",
     "menu_search": "🔍 Пошук",
+    "menu_profile": "👤 Профіль",
+    
+    # Profile
+    "profile_title": "👤 *Ваш профіль*\n\n📝 *Ім'я:* {name}\n🌐 *Мова:* {language}\n",
+    "profile_change_language": "🌐 Змінити мову",
+    "profile_change_name": "📝 Змінити ім'я",
+    "profile_name_prompt": "Введіть нове ім'я (2-64 символи):",
+    "profile_name_changed": "✅ Ім'я змінено на *{name}*",
+    "profile_language_changed": "✅ Мова змінена на _{language}_",
     
     # Errors and validation
     "title_too_short": "⚠️ Назва занадто коротка (мін. 3 символи):",
@@ -344,6 +353,15 @@ EN = {
     "menu_enter_code": "🔑 Enter Code",
     "menu_my_results": "📈 My Results",
     "menu_search": "🔍 Search",
+    "menu_profile": "👤 Profile",
+    
+    # Profile
+    "profile_title": "👤 *Your Profile*\n\n📝 *Name:* {name}\n🌐 *Language:* {language}\n",
+    "profile_change_language": "🌐 Change Language",
+    "profile_change_name": "📝 Change Name",
+    "profile_name_prompt": "Enter new name (2-64 characters):",
+    "profile_name_changed": "✅ Name changed to *{name}*",
+    "profile_language_changed": "✅ Language changed to _{language}_",
     
     # Errors and validation
     "title_too_short": "⚠️ Name too short (minimum 3 characters):",

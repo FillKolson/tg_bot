@@ -56,6 +56,14 @@ async def update_user_language(telegram_id: int, language: str) -> Optional[dict
     return res.data[0] if res.data else None
 
 
+async def update_user_name(telegram_id: int, name: str) -> Optional[dict]:
+    """Change user's name."""
+    res = await supabase_admin.table("users").update(
+        {"name": name}
+    ).eq("telegram_id", telegram_id).execute()
+    return res.data[0] if res.data else None
+
+
 # Subjects
 
 async def get_subjects(telegram_id: int = None) -> list[dict]:

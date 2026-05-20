@@ -23,7 +23,7 @@ from keyboards.callbacks import (
 from keyboards.keyboards import (
     teacher_menu, subjects_keyboard, visibility_keyboard,
     options_input_keyboard, correct_option_keyboard,
-    question_next_keyboard, my_tests_keyboard, my_tests_subjects_keyboard,
+    question_next_keyboard, my_tests_subjects_keyboard,
     subject_tests_list_keyboard,
     answer_visibility_keyboard, attempts_keyboard, limited_attempts_keyboard,
     edit_test_menu_keyboard, edit_questions_list_keyboard, edit_options_list_keyboard,
@@ -529,8 +529,6 @@ async def view_tests_and_results(message: Message, state: FSMContext) -> None:
     await state.set_state(TeacherStates.viewing_tests_and_results)
 
 
-    await callback.answer()
-
 
 @router.message(F.text == "📊 Статистика")
 async def view_statistics(message: Message, state: FSMContext) -> None:
@@ -722,6 +720,7 @@ async def confirm_delete_action(callback: CallbackQuery, callback_data: ConfirmD
                 parse_mode="Markdown",
             )
             await callback.answer(i18n("test_deleted", lang))
+            await state.set_state(TeacherStates.viewing_tests_and_results)
         else:
             user = await queries.get_user(callback.from_user.id)
             tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
@@ -733,6 +732,7 @@ async def confirm_delete_action(callback: CallbackQuery, callback_data: ConfirmD
                 parse_mode="Markdown",
             )
             await callback.answer(i18n("delete_error", lang))
+            await state.set_state(TeacherStates.viewing_tests_and_results)
     else:
         # Cancel deletion
         user = await queries.get_user(callback.from_user.id)

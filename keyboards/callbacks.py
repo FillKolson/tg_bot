@@ -9,6 +9,10 @@ class LangCallback(CallbackData, prefix="lang"):
     value: str  # "uk" | "en"
 
 
+class ProfileCallback(CallbackData, prefix="prof"):
+    action: str  # "view" | "change_lang" | "change_name"
+
+
 class SubjectCallback(CallbackData, prefix="subj"):
     id: int
 
