@@ -2,6 +2,7 @@
 Student handlers - browse subjects, take tests, view results.
 """
 import logging
+import asyncio
 from datetime import datetime
 from typing import Optional
 
@@ -20,6 +21,45 @@ from states.states import StudentStates
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+async def _expiry_watcher(session_id: int, expires_iso: str, chat_id: int, bot) -> None:
+    """Background task that waits until expires_iso, then completes session if not finished and notifies student."""
+    try:
+        from datetime import datetime, timezone
+
+        ex = expires_iso
+        if ex.endswith("Z"):
+            ex = ex[:-1] + "+00:00"
+        exp_dt = datetime.fromisoformat(ex)
+        now = datetime.now(timezone.utc)
+        wait = (exp_dt - now).total_seconds()
+        if wait > 0:
+            await asyncio.sleep(wait)
+
+        # Re-check session status
+        session = await queries.get_session(session_id)
+        if not session:
+            return
+        if session.get("completed_at"):
+            return
+
+        # Compute current score and finalize
+        score = await queries.get_session_score(session_id)
+        total = session.get("total_questions") or 0
+        pct = round(score / total * 100) if total > 0 else 0
+        await queries.complete_session(session_id, score, pct)
+
+        # Notify student
+        user = await queries.get_user(session.get("student_id"))
+        lang = user.get("language", "uk") if user else "uk"
+        try:
+            await bot.send_message(chat_id, i18n("time_up", lang))
+        except Exception:
+            # best-effort notify
+            pass
+    except Exception:
+        return
 
 def _attempts_label(max_attempts: int, lang: str) -> str:
     if lang == "en":
@@ -230,12 +270,32 @@ async def start_test(callback: CallbackQuery, callback_data: TestCallback, state
             )
             return
 
-    session = await queries.create_session(test["id"], user["id"], len(test["questions"]))
+    # Compute expires_at for timed tests
+    expires_at = None
+    if test.get("time_limit_minutes") is not None:
+        from datetime import datetime, timezone, timedelta
+
+        try:
+            minutes = int(test["time_limit_minutes"])
+            expires = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+            expires_at = expires.isoformat()
+        except Exception:
+            expires_at = None
+
+    session = await queries.create_session(test["id"], user["id"], len(test["questions"]), expires_at=expires_at)
+
+    # Start background watcher to auto-complete and notify when time expires
+    if expires_at:
+        try:
+            asyncio.create_task(_expiry_watcher(session["id"], expires_at, callback.from_user.id, callback.bot))
+        except Exception:
+            logger.exception("Failed to start expiry watcher task")
 
     await state.set_state(StudentStates.taking_test)
     await state.update_data(
         test_id=test["id"],
         session_id=session["id"],
+        expires_at=expires_at,
         test_title=test["title"],
         subject_name=test.get("subjects", {}).get("name", "—"),
         questions=test["questions"],
@@ -283,6 +343,31 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext) -> None:
     questions = data["questions"]
     idx = data["current_index"]
     q = questions[idx]
+
+    # Check if session expired
+    expires_at = data.get("expires_at")
+    if expires_at:
+        try:
+            from datetime import datetime, timezone
+
+            ex = expires_at
+            if ex.endswith("Z"):
+                ex = ex[:-1] + "+00:00"
+            exp_dt = datetime.fromisoformat(ex)
+            now = datetime.now(timezone.utc)
+            if now >= exp_dt:
+                # finalize session as expired
+                score_so_far = data.get("score", 0)
+                total_q = len(questions)
+                pct = round(score_so_far / total_q * 100) if total_q > 0 else 0
+                await queries.complete_session(data["session_id"], score_so_far, pct)
+                await state.clear()
+                await callback.message.answer(i18n("time_up", lang), reply_markup=student_menu(lang))
+                await callback.answer()
+                return
+        except Exception:
+            # If parsing fails, ignore and continue
+            pass
 
     # Find selected option
     selected_opt = next((o for o in q["options"] if o["id"] == option_id), None)

@@ -250,13 +250,12 @@ def correct_option_keyboard(options: list[str]) -> InlineKeyboardMarkup:
 # After saving a question
 
 def question_next_keyboard(lang: str = "uk") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=i18n("add_more_questions", lang),
-                             callback_data=QuestionNextCallback(action="add").pack()),
-        InlineKeyboardButton(text=i18n("finish_test", lang),
-                             callback_data=QuestionNextCallback(action="finish").pack()),
-    ]])
-
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=i18n("add_more_questions", lang),
+                              callback_data=QuestionNextCallback(action="add").pack())],
+        [InlineKeyboardButton(text=i18n("finish_test", lang),
+                              callback_data=QuestionNextCallback(action="finish").pack())],
+    ])
 
 # Answer options during test
 
@@ -296,6 +295,8 @@ def edit_test_menu_keyboard(test_id: int) -> InlineKeyboardMarkup:
                               callback_data=EditTestCallback(id=test_id, action="vis").pack())],
         [InlineKeyboardButton(text="⏱️ Кількість спроб",
                               callback_data=EditTestCallback(id=test_id, action="attempts").pack())],
+        [InlineKeyboardButton(text="⏱️ Обмеження часу",
+                              callback_data=EditTestCallback(id=test_id, action="time").pack())],
         [InlineKeyboardButton(text="❓ Редагувати питання",
                               callback_data=EditTestCallback(id=test_id, action="questions").pack())],
         [InlineKeyboardButton(text="⬅️ Назад",
@@ -322,6 +323,19 @@ def edit_questions_list_keyboard(test_id: int, questions: list[dict]) -> InlineK
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def question_edit_menu_keyboard(question_id: int, question_text: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Редагувати текст питання",
+                              callback_data=EditQuestionCallback(id=question_id, action="text").pack())],
+        [InlineKeyboardButton(text="📝 Редагувати варіанти відповіді",
+                              callback_data=EditQuestionCallback(id=question_id, action="options").pack())],
+        [InlineKeyboardButton(text="🗑 Видалити питання",
+                              callback_data=EditQuestionCallback(id=question_id, action="delete").pack())],
+        [InlineKeyboardButton(text="⬅️ Назад",
+                              callback_data=BackCallback(to="questions").pack())],
+    ])
+
+
 def edit_options_list_keyboard(question_id: int, options: list[dict]) -> InlineKeyboardMarkup:
     """List of options with edit/delete and mark correct."""
     rows = []
@@ -336,9 +350,13 @@ def edit_options_list_keyboard(question_id: int, options: list[dict]) -> InlineK
                 text="🗑",
                 callback_data=EditOptionCallback(id=opt["id"], action="delete").pack()
             ),
+            InlineKeyboardButton(
+                text="✔️",
+                callback_data=EditOptionCallback(id=opt["id"], action="mark_correct").pack()
+            ),
         ])
     rows.append([InlineKeyboardButton(text="⬅️ Назад",
-                                     callback_data=EditQuestionCallback(id=question_id, action="edit").pack())])
+                                     callback_data=BackCallback(to="question_edit").pack())])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

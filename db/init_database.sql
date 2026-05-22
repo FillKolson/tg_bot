@@ -1,11 +1,7 @@
 -- ============================================================
 --  Telegram Quiz Bot — Complete Database Initialization
---  Run this script to setup or reset the entire database
 -- ============================================================
 
--- ============================================================
---  DROP POLICIES (if they exist)
--- ============================================================
 DROP POLICY IF EXISTS "users_select_own" ON users;
 DROP POLICY IF EXISTS "users_update_own" ON users;
 DROP POLICY IF EXISTS "users_insert_service" ON users;
@@ -78,6 +74,7 @@ CREATE TABLE tests (
     is_active                BOOLEAN DEFAULT TRUE,
     show_answer_correctness  BOOLEAN DEFAULT TRUE,         -- teacher decides if answers are shown
     max_attempts             INTEGER,                      -- NULL = unlimited attempts
+    time_limit_minutes       INTEGER,                      -- NULL = no time limit
     created_at               TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -107,6 +104,7 @@ CREATE TABLE test_sessions (
     total_questions INTEGER DEFAULT 0,
     percentage      REAL DEFAULT 0,
     started_at      TIMESTAMPTZ DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ,
     completed_at    TIMESTAMPTZ
 );
 
@@ -299,10 +297,3 @@ CREATE POLICY "session_answers_update_own_session" ON session_answers
             AND test_sessions.student_id = (SELECT id FROM users WHERE telegram_id = (auth.jwt() ->> 'telegram_id')::BIGINT LIMIT 1)
         )
     );
-
--- ============================================================
---  DONE
--- ============================================================
--- Database is now ready with all tables and RLS policies
--- Tables: users, subjects, tests, questions, options, test_sessions, session_answers
--- All RLS policies are in place

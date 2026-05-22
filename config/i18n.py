@@ -172,6 +172,12 @@ UK = {
     "profile_name_changed": "✅ Ім'я змінено на *{name}*",
     "profile_language_changed": "✅ Мова змінена на _{language}_",
     
+    # Timer for tests
+    "time_limit_prompt": "⏱️ Введіть обмеження часу для тесту в хвилинах (ціле число), або надішліть /skip для відсутності обмеження:",
+    "time_limit_invalid": "⚠️ Невірний формат. Введіть число хвилин або /skip:",
+    "time_limit_set": "✅ Обмеження часу встановлено: {minutes} хв.",
+    "time_up": "⏰ Час закінчився! Тест завершено.",
+    
     # Errors and validation
     "title_too_short": "⚠️ Назва занадто коротка (мін. 3 символи):",
     "title_too_short_subject": "⚠️ Занадто коротка назва. Спробуйте ще раз:",
@@ -362,6 +368,12 @@ EN = {
     "profile_name_prompt": "Enter new name (2-64 characters):",
     "profile_name_changed": "✅ Name changed to *{name}*",
     "profile_language_changed": "✅ Language changed to _{language}_",
+    
+    # Timer for tests
+    "time_limit_prompt": "⏱️ Enter a time limit for the test in minutes (integer), or send /skip for no limit:",
+    "time_limit_invalid": "⚠️ Invalid format. Enter number of minutes or /skip:",
+    "time_limit_set": "✅ Time limit set: {minutes} minutes.",
+    "time_up": "⏰ Time's up! Test finished.",
     
     # Errors and validation
     "title_too_short": "⚠️ Name too short (minimum 3 characters):",

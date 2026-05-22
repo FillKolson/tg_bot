@@ -68,7 +68,7 @@ class EditTestCallback(CallbackData, prefix="editest"):
 
 class EditQuestionCallback(CallbackData, prefix="editq"):
     id: int
-    action: str  # "edit" | "delete"
+    action: str  # "edit" | "text" | "options" | "delete"
 
 
 class EditOptionCallback(CallbackData, prefix="edito"):
