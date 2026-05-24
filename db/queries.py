@@ -40,12 +40,38 @@ async def get_user(telegram_id: int) -> Optional[dict]:
     return res.data[0] if res.data else None
 
 
-async def create_user(telegram_id: int, name: str, role: str, language: str = "uk") -> dict:
-    """Insert new user into database."""
-    res = await supabase_admin.table("users").insert(
-        {"telegram_id": telegram_id, "name": name, "role": role, "language": language}
-    ).execute()
+async def create_user(telegram_id: int, name: str, role: str, language: str = "uk", password_hash: Optional[str] = None) -> dict:
+    """Insert new user into database. Optionally include a password_hash for teachers."""
+    payload = {"telegram_id": telegram_id, "name": name, "role": role, "language": language}
+    if password_hash is not None:
+        payload["password_hash"] = password_hash
+    res = await supabase_admin.table("users").insert(payload).execute()
     return res.data[0]
+
+
+async def update_user_password(telegram_id: int, password_hash: str) -> Optional[dict]:
+    """Update user's password hash."""
+    res = await supabase_admin.table("users").update({"password_hash": password_hash}).eq("telegram_id", telegram_id).execute()
+    return res.data[0] if res.data else None
+
+
+async def increment_failed_attempts(telegram_id: int) -> int:
+    """Increment failed_attempts counter for user and return new count."""
+    # Attempt to increment atomically if DB supports it; otherwise fetch and update
+    user = await get_user(telegram_id)
+    if not user:
+        return 0
+    fa = (user.get("failed_attempts") or 0) + 1
+    await supabase_admin.table("users").update({"failed_attempts": fa}).eq("telegram_id", telegram_id).execute()
+    return fa
+
+
+async def reset_failed_attempts(telegram_id: int) -> None:
+    await supabase_admin.table("users").update({"failed_attempts": 0, "locked_until": None}).eq("telegram_id", telegram_id).execute()
+
+
+async def lock_user_until(telegram_id: int, iso_ts: str) -> None:
+    await supabase_admin.table("users").update({"locked_until": iso_ts}).eq("telegram_id", telegram_id).execute()
 
 
 async def update_user_language(telegram_id: int, language: str) -> Optional[dict]:

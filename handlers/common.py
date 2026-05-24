@@ -139,6 +139,139 @@ async def profile_change_name(callback: CallbackQuery, state: FSMContext) -> Non
     await state.set_state(ProfileStates.changing_name)
 
 
+@router.callback_query(ProfileStates.choosing_action, ProfileCallback.filter(F.action == "change_password"))
+async def profile_change_password(callback: CallbackQuery, state: FSMContext) -> None:
+    """Initiate change password flow: ask for current password."""
+    user = await queries.get_user(callback.from_user.id)
+    if not user or user.get("role") != "teacher":
+        await callback.answer(i18n("teacher_only", user.get("language", "uk") if user else "uk"), show_alert=True)
+        return
+
+    lang = user.get("language", "uk")
+    # Check locked_until
+    locked = user.get("locked_until")
+    if locked:
+        await callback.answer(i18n("account_locked", lang, until=locked), show_alert=True)
+        return
+
+    await callback.message.edit_text(i18n("enter_current_password", lang))
+    await state.set_state(ProfileStates.changing_password_current)
+    await callback.answer()
+
+
+@router.message(ProfileStates.changing_password_current, F.text)
+async def profile_current_password_entered(message: Message, state: FSMContext) -> None:
+    user = await queries.get_user(message.from_user.id)
+    if not user:
+        await message.answer(i18n("not_registered", "uk"))
+        return
+
+    lang = user.get("language", "uk")
+    if user.get("locked_until"):
+        await message.answer(i18n("account_locked", lang, until=user.get("locked_until")))
+        await state.clear()
+        return
+
+    from security import verify_password
+
+    entered = message.text.strip()
+    pwd_hash = user.get("password_hash")
+    if not pwd_hash or not verify_password(entered, pwd_hash):
+        # increment failed attempts
+        fa = await queries.increment_failed_attempts(message.from_user.id)
+        MAX_FAIL = 5
+        if fa >= MAX_FAIL:
+            # lock user
+            from datetime import datetime, timedelta, timezone
+            until = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+            await queries.lock_user_until(message.from_user.id, until)
+            await message.answer(i18n("too_many_attempts", lang))
+            await state.clear()
+            return
+        await message.answer(i18n("password_incorrect", lang))
+        return
+
+    # success
+    await queries.reset_failed_attempts(message.from_user.id)
+    await message.answer(i18n("enter_new_password_prompt", lang))
+    await state.set_state(ProfileStates.changing_password_new)
+
+
+@router.message(ProfileStates.changing_password_new, F.text)
+async def profile_new_password_entered(message: Message, state: FSMContext) -> None:
+    user = await queries.get_user(message.from_user.id)
+    if not user:
+        await message.answer(i18n("not_registered", "uk"))
+        return
+
+    lang = user.get("language", "uk")
+    new_pwd = message.text.strip()
+    from security import is_common_password, hash_password
+
+    if is_common_password(new_pwd):
+        await message.answer(i18n("password_too_common", lang))
+        return
+    if len(new_pwd) < 8:
+        await message.answer(i18n("password_too_short", lang))
+        return
+
+    new_hash = hash_password(new_pwd)
+    await queries.update_user_password(message.from_user.id, new_hash)
+    await message.answer(i18n("password_changed", lang))
+    await state.clear()
+    menu = teacher_menu(lang)
+    await message.answer(i18n("welcome_back", lang, name=user["name"], role=i18n(f"role_{user['role']}", lang)), reply_markup=menu, parse_mode="Markdown")
+
+
+@router.callback_query(ProfileStates.choosing_action, ProfileCallback.filter(F.action == "reset_password"))
+async def profile_reset_password(callback: CallbackQuery, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    if not user or user.get("role") != "teacher":
+        await callback.answer(i18n("teacher_only", user.get("language", "uk") if user else "uk"), show_alert=True)
+        return
+    lang = user.get("language", "uk")
+    await callback.message.edit_text(i18n("enter_teacher_code", lang))
+    await state.set_state(ProfileStates.resetting_password_code)
+    await callback.answer()
+
+
+@router.message(ProfileStates.resetting_password_code, F.text)
+async def profile_reset_code_entered(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    lang = data.get("language", "uk") or "uk"
+    code = message.text.strip()
+    expected = __import__("os").getenv("TEACHER_SIGNUP_CODE", "TEACHER2026")
+    if code != expected:
+        await message.answer(i18n("teacher_code_invalid", lang))
+        return
+    await message.answer(i18n("enter_new_password_prompt", lang))
+    await state.set_state(ProfileStates.resetting_password_new)
+
+
+@router.message(ProfileStates.resetting_password_new, F.text)
+async def profile_reset_new_password(message: Message, state: FSMContext) -> None:
+    user = await queries.get_user(message.from_user.id)
+    if not user:
+        await message.answer(i18n("not_registered", "uk"))
+        return
+    lang = user.get("language", "uk")
+    new_pwd = message.text.strip()
+    from security import is_common_password, hash_password
+
+    if is_common_password(new_pwd):
+        await message.answer(i18n("password_too_common", lang))
+        return
+    if len(new_pwd) < 8:
+        await message.answer(i18n("password_too_short", lang))
+        return
+
+    new_hash = hash_password(new_pwd)
+    await queries.update_user_password(message.from_user.id, new_hash)
+    await queries.reset_failed_attempts(message.from_user.id)
+    await message.answer(i18n("password_reset_success", lang))
+    await state.clear()
+
+
 @router.message(ProfileStates.changing_name)
 async def profile_name_entered(message: Message, state: FSMContext) -> None:
     """Update user name."""

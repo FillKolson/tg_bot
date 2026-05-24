@@ -10,7 +10,7 @@ class LangCallback(CallbackData, prefix="lang"):
 
 
 class ProfileCallback(CallbackData, prefix="prof"):
-    action: str  # "view" | "change_lang" | "change_name"
+    action: str  # "view" | "change_lang" | "change_name" | "change_password" | "reset_password"
 
 
 class SubjectCallback(CallbackData, prefix="subj"):

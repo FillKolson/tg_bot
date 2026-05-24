@@ -5,6 +5,8 @@ class AuthStates(StatesGroup):
     choosing_role = State()
     choosing_language = State()
     entering_name = State()
+    entering_teacher_code = State()
+    entering_teacher_password = State()
 
 
 class ProfileStates(StatesGroup):
@@ -12,6 +14,10 @@ class ProfileStates(StatesGroup):
     choosing_action = State()
     changing_language = State()
     changing_name = State()
+    changing_password_current = State()
+    changing_password_new = State()
+    resetting_password_code = State()
+    resetting_password_new = State()
 
 
 class TeacherStates(StatesGroup):

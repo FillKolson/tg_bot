@@ -77,6 +77,10 @@ def profile_menu_keyboard(lang: str = "uk") -> InlineKeyboardMarkup:
                               callback_data=ProfileCallback(action="change_lang").pack())],
         [InlineKeyboardButton(text=i18n("profile_change_name", lang),
                               callback_data=ProfileCallback(action="change_name").pack())],
+        [InlineKeyboardButton(text=i18n("profile_change_password", lang),
+                              callback_data=ProfileCallback(action="change_password").pack())],
+        [InlineKeyboardButton(text=i18n("profile_reset_password", lang),
+                              callback_data=ProfileCallback(action="reset_password").pack())],
         [InlineKeyboardButton(text=i18n("back", lang),
                               callback_data=BackCallback(to="menu").pack())],
     ])
