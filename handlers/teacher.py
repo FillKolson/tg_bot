@@ -827,6 +827,44 @@ def _progress_bar(pct: int, length: int = 10) -> str:
     return "█" * filled + "░" * (length - filled)
 
 
+async def _handle_delete_test_question(
+    callback: CallbackQuery,
+    callback_data: EditQuestionCallback,
+    state: FSMContext,
+    lang: str,
+) -> None:
+    data = await state.get_data()
+    test_id = data.get("editing_test_id")
+    if not test_id:
+        await callback.answer("⚠️ Помилка видалення.", show_alert=True)
+        return
+
+    test = await queries.get_test_with_questions(test_id)
+    if not test:
+        await callback.answer("⚠️ Помилка видалення.", show_alert=True)
+        return
+
+    if len(test.get("questions", [])) <= 1:
+        await callback.answer(i18n("cannot_delete_last_question", lang), show_alert=True)
+        return
+
+    deleted = await queries.delete_question(callback_data.id)
+    if not deleted:
+        await callback.answer("⚠️ Помилка видалення.", show_alert=True)
+        return
+
+    test = await queries.get_test_with_questions(test_id)
+    questions = test.get("questions", []) if test else []
+    await callback.message.edit_text(
+        f"❓ *Питання тесту: {test['title']}*\n\n"
+        "Оберіть питання для редагування:",
+        reply_markup=edit_questions_list_keyboard(test_id, questions),
+        parse_mode="Markdown",
+    )
+    await state.set_state(TeacherStates.editing_questions_menu)
+    await callback.answer("✅ Питання видалено.")
+
+
 # Edit test
 
 @router.callback_query(EditTestCallback.filter(F.action == "menu"))
@@ -1132,32 +1170,9 @@ async def edit_questions_list(callback: CallbackQuery, callback_data: EditTestCa
 @router.callback_query(TeacherStates.editing_questions_menu, EditQuestionCallback.filter(F.action == "delete"))
 async def delete_question(callback: CallbackQuery, callback_data: EditQuestionCallback, state: FSMContext) -> None:
     """Delete a question."""
-    deleted = await queries.delete_question(callback_data.id)
-    if deleted:
-        await callback.answer("✅ Питання видалено.", show_alert=True)
-    else:
-        await callback.answer("⚠️ Помилка видалення.", show_alert=True)
-
-    data = await state.get_data()
-    test_id = data.get("editing_test_id")
-    if test_id:
-        test = await queries.get_test_with_questions(test_id)
-        questions = test.get("questions", []) if test else []
-        if questions:
-            await callback.message.edit_text(
-                f"❓ *Питання тесту: {test['title']}*\n\n"
-                "Оберіть питання для редагування:",
-                reply_markup=edit_questions_list_keyboard(test_id, questions),
-                parse_mode="Markdown",
-            )
-            await state.set_state(TeacherStates.editing_questions_menu)
-        else:
-            await callback.message.edit_text(
-                "❓ У цьому тесті більше немає питань.",
-                parse_mode="Markdown",
-            )
-            await state.set_state(TeacherStates.editing_test)
-    await callback.answer()
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+    await _handle_delete_test_question(callback, callback_data, state, lang)
 
 
 @router.callback_query(TeacherStates.editing_questions_menu, EditQuestionCallback.filter(F.action == "edit"))
@@ -1181,32 +1196,9 @@ async def edit_question_prompt(callback: CallbackQuery, callback_data: EditQuest
 @router.callback_query(TeacherStates.selecting_question_to_edit, EditQuestionCallback.filter(F.action == "delete"))
 async def delete_question_from_edit_menu(callback: CallbackQuery, callback_data: EditQuestionCallback, state: FSMContext) -> None:
     """Delete question from question edit menu."""
-    deleted = await queries.delete_question(callback_data.id)
-    if deleted:
-        await callback.answer("✅ Питання видалено.", show_alert=True)
-    else:
-        await callback.answer("⚠️ Помилка видалення.", show_alert=True)
-
-    data = await state.get_data()
-    test_id = data.get("editing_test_id")
-    if test_id:
-        test = await queries.get_test_with_questions(test_id)
-        questions = test.get("questions", []) if test else []
-        if questions:
-            await callback.message.edit_text(
-                f"❓ *Питання тесту: {test['title']}*\n\n"
-                "Оберіть питання для редагування:",
-                reply_markup=edit_questions_list_keyboard(test_id, questions),
-                parse_mode="Markdown",
-            )
-            await state.set_state(TeacherStates.editing_questions_menu)
-        else:
-            await callback.message.edit_text(
-                "❓ У цьому тесті більше немає питань.",
-                parse_mode="Markdown",
-            )
-            await state.set_state(TeacherStates.editing_test)
-    await callback.answer()
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+    await _handle_delete_test_question(callback, callback_data, state, lang)
 
 
 @router.callback_query(TeacherStates.selecting_question_to_edit, EditQuestionCallback.filter(F.action == "text"))
@@ -1322,10 +1314,25 @@ async def edit_option_save(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(TeacherStates.editing_question_options, EditOptionCallback.filter(F.action == "delete"))
 async def delete_question_option(callback: CallbackQuery, callback_data: EditOptionCallback, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     data = await state.get_data()
     question_id = data.get("editing_question_id")
     if not question_id:
         await callback.answer("⚠️ Не знайдено питання для редагування.", show_alert=True)
+        return
+
+    option = await queries.get_option(callback_data.id)
+    if not option:
+        await callback.answer("⚠️ Помилка видалення.", show_alert=True)
+        return
+    if option.get("is_correct"):
+        await callback.answer(i18n("cannot_delete_correct_option", lang), show_alert=True)
+        return
+
+    options = await queries.get_options_by_question(question_id)
+    if len(options) <= 2:
+        await callback.answer(i18n("min_options", lang), show_alert=True)
         return
 
     deleted = await queries.delete_option(callback_data.id)
