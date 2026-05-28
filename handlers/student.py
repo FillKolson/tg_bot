@@ -8,9 +8,10 @@ from typing import Optional
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, InlineKeyboardButton, InlineKeyboardMarkup
 
 from db import queries
+from db.queries import QuestionType
 from config.i18n import i18n
 from keyboards.callbacks import SubjectCallback, TestCallback, BackCallback, SearchCallback, TeacherFilterCallback
 from keyboards.keyboards import (
@@ -21,6 +22,24 @@ from states.states import StudentStates
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+def _multiple_answer_keyboard(question_id: int, options: list[dict], selected_ids: list[int]) -> InlineKeyboardMarkup:
+    """Keyboard for selecting multiple answers for a multiple choice question."""
+    rows = []
+    for opt in options:
+        is_selected = opt["id"] in selected_ids
+        prefix = "✅ " if is_selected else "⭕ "
+        rows.append([InlineKeyboardButton(
+            text=f"{prefix}{opt['text']}",
+            callback_data=f"ans:{question_id}:{opt['id']}"
+        )])
+    # Add confirm button
+    rows.append([InlineKeyboardButton(
+        text="✓ Підтвердити",
+        callback_data=f"mult_ans_confirm:{question_id}"
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _expiry_watcher(session_id: int, expires_iso: str, chat_id: int, bot) -> None:
@@ -320,15 +339,24 @@ async def _send_question(message: Message, state: FSMContext) -> None:
     idx = data["current_index"]
     q = questions[idx]
     total = len(questions)
+    question_type = q.get("question_type", QuestionType.SINGLE_CHOICE)
+
+    # Show different keyboard for multiple choice questions
+    if question_type == QuestionType.MULTIPLE_CHOICE:
+        keyboard = _multiple_answer_keyboard(q["id"], q["options"], [])
+        instruction = "\n\n📌 *Оберіть одну або кілька правильних відповідей, потім натисніть «Підтвердити»*"
+    else:
+        keyboard = answer_keyboard(q["id"], q["options"])
+        instruction = ""
 
     await message.answer(
-        f"{i18n('question_counter', lang, current=idx + 1, total=total)}\n\n{q['text']}",
-        reply_markup=answer_keyboard(q["id"], q["options"]),
+        f"{i18n('question_counter', lang, current=idx + 1, total=total)}\n\n{q['text']}{instruction}",
+        reply_markup=keyboard,
         parse_mode="Markdown",
     )
 
 
-# Answer question
+# Answer question (single choice)
 
 @router.callback_query(StudentStates.taking_test, F.data.startswith("ans:"))
 async def handle_answer(callback: CallbackQuery, state: FSMContext) -> None:
@@ -344,6 +372,23 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext) -> None:
     idx = data["current_index"]
     q = questions[idx]
 
+    # Check if this is a multiple choice question
+    question_type = q.get("question_type", QuestionType.SINGLE_CHOICE)
+    if question_type == QuestionType.MULTIPLE_CHOICE:
+        # Handle multiple selection
+        selected_option_ids = data.get("selected_option_ids", [])
+        if option_id in selected_option_ids:
+            selected_option_ids.remove(option_id)
+        else:
+            selected_option_ids.append(option_id)
+        await state.update_data(selected_option_ids=selected_option_ids)
+        await callback.message.edit_reply_markup(
+            reply_markup=_multiple_answer_keyboard(q["id"], q["options"], selected_option_ids)
+        )
+        await callback.answer()
+        return
+
+    # Single choice handling
     # Check if session expired
     expires_at = data.get("expires_at")
     if expires_at:
@@ -383,7 +428,7 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext) -> None:
 
     # Feedback to user (depends on show_answer_correctness setting)
     show_answers = data.get("show_answer_correctness", False)
-    
+
     if show_answers:
         # Show immediate feedback with correct/incorrect info
         if is_correct:
@@ -424,6 +469,109 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext) -> None:
         )
     else:
         await state.update_data(current_index=next_idx, score=score)
+        await _send_question(callback.message, state)
+
+    await callback.answer()
+
+
+# Handle multiple answer confirmation
+
+@router.callback_query(StudentStates.taking_test, F.data.startswith("mult_ans_confirm:"))
+async def handle_multiple_answer_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+    _, q_id_str = callback.data.split(":")
+    question_id = int(q_id_str)
+
+    data = await state.get_data()
+    lang = data.get("lang", lang)
+    questions = data["questions"]
+    idx = data["current_index"]
+    q = questions[idx]
+    selected_option_ids = data.get("selected_option_ids", [])
+
+    if not selected_option_ids:
+        await callback.answer(i18n("select_at_least_one", lang), show_alert=True)
+        return
+
+    # Check if session expired
+    expires_at = data.get("expires_at")
+    if expires_at:
+        try:
+            from datetime import datetime, timezone
+
+            ex = expires_at
+            if ex.endswith("Z"):
+                ex = ex[:-1] + "+00:00"
+            exp_dt = datetime.fromisoformat(ex)
+            now = datetime.now(timezone.utc)
+            if now >= exp_dt:
+                # finalize session as expired
+                score_so_far = data.get("score", 0)
+                total_q = len(questions)
+                pct = round(score_so_far / total_q * 100) if total_q > 0 else 0
+                await queries.complete_session(data["session_id"], score_so_far, pct)
+                await state.clear()
+                await callback.message.answer(i18n("time_up", lang), reply_markup=student_menu(lang))
+                await callback.answer()
+                return
+        except Exception:
+            pass
+
+    # Save multiple answers
+    await queries.save_multiple_answers(data["session_id"], question_id, selected_option_ids)
+
+    # Calculate partial credit
+    question_score = await queries.get_question_score(data["session_id"], question_id)
+    score = data["score"] + question_score
+
+    # Get correct options for feedback
+    correct_opts = [o for o in q["options"] if o.get("is_correct")]
+    correct_texts = ", ".join([o["text"] for o in correct_opts])
+
+    # Feedback to user
+    show_answers = data.get("show_answer_correctness", False)
+    if show_answers:
+        if question_score == 1.0:
+            feedback = i18n("correct_answer", lang)
+        elif question_score > 0:
+            feedback = i18n("partial_correct", lang, score=int(question_score * 100))
+        else:
+            feedback = i18n("wrong_answer_multiple", lang, correct=correct_texts)
+    else:
+        feedback = i18n("answer_saved", lang)
+
+    await callback.message.edit_reply_markup()
+    await callback.message.answer(feedback, parse_mode="Markdown")
+
+    # Clear selected options
+    await state.update_data(selected_option_ids=[], current_index=idx + 1, score=score)
+
+    next_idx = idx + 1
+    total = len(questions)
+
+    if next_idx >= total:
+        # Test finished
+        pct = round(score / total * 100)
+        await queries.complete_session(data["session_id"], score, pct)
+        await state.clear()
+        bar = _progress_bar(pct)
+        grade = _grade_i18n(pct, lang)
+        title = data.get("test_title", "Тест")
+        subject_name = data.get("subject_name", "—")
+
+        await callback.message.answer(
+            f"🏁 *Тест завершено!*\n\n"
+            f"📝 *{title}*\n"
+            f"📖 Предмет: {subject_name}\n"
+            f"📊 Результат: *{score} / {total}* ({pct}%)\n"
+            f"{bar}\n"
+            f"{grade}\n\n"
+            "📌 Перегляньте історію у меню *📈 Мої результати*.",
+            reply_markup=student_menu(lang),
+            parse_mode="Markdown",
+        )
+    else:
         await _send_question(callback.message, state)
 
     await callback.answer()

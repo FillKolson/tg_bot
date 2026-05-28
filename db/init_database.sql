@@ -84,6 +84,7 @@ CREATE TABLE questions (
     test_id        BIGINT REFERENCES tests(id) ON DELETE CASCADE,
     text           TEXT NOT NULL,
     question_order INTEGER NOT NULL DEFAULT 0,
+    question_type  TEXT DEFAULT 'single_choice' CHECK (question_type IN ('single_choice', 'multiple_choice', 'open_answer', 'matching', 'ordering')),
     created_at     TIMESTAMPTZ DEFAULT NOW()
 );
 

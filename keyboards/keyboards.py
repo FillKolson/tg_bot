@@ -400,12 +400,60 @@ def back_keyboard(to: str) -> InlineKeyboardMarkup:
 
 # Statistics
 
-def statistics_keyboard() -> InlineKeyboardMarkup:
-    """Button to view statistics."""
+def statistics_subjects_keyboard(stats: list[dict]) -> InlineKeyboardMarkup:
+    """One button per subject; opens subject detail."""
+    rows = []
+    for stat in stats:
+        if stat["total_sessions"]:
+            label = f"{stat['subject_name']} · {stat['average_score']}%"
+        else:
+            label = f"{stat['subject_name']} · —"
+        rows.append([InlineKeyboardButton(
+            text=label[:64],
+            callback_data=StatisticsCallback(action="subject", id=stat["subject_id"]).pack(),
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def statistics_test_back_keyboard(subject_id: int, lang: str = "uk") -> InlineKeyboardMarkup:
+    """Back to subject statistics."""
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="📊 Переглянути статистику",
-                             callback_data=StatisticsCallback(action="view").pack()),
+        InlineKeyboardButton(
+            text=i18n("back", lang),
+            callback_data=StatisticsCallback(action="subject", id=subject_id).pack(),
+        ),
     ]])
+
+
+def statistics_subject_view_keyboard(
+    tests: list[dict],
+    subject_id: int,
+    lang: str,
+    *,
+    show_test_buttons: bool,
+    show_overview_back: bool,
+) -> InlineKeyboardMarkup | None:
+    """Keyboard for subject stats: optional test list and/or back to overview."""
+    rows = []
+    if show_test_buttons:
+        for test in tests:
+            if not test["session_count"]:
+                continue
+            label = f"{test['title'][:36]} · {test['average_score']}%"
+            rows.append([InlineKeyboardButton(
+                text=label[:64],
+                callback_data=StatisticsCallback(
+                    action="test", id=test["id"], sub=subject_id,
+                ).pack(),
+            )])
+    if show_overview_back:
+        rows.append([InlineKeyboardButton(
+            text=i18n("back", lang),
+            callback_data=StatisticsCallback(action="view").pack(),
+        )])
+    if not rows:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # Delete confirmation

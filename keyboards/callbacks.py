@@ -89,7 +89,9 @@ class TeacherFilterCallback(CallbackData, prefix="tfilter"):
 # Statistics
 
 class StatisticsCallback(CallbackData, prefix="stats"):
-    action: str  # "view"
+    action: str  # "view" | "subject" | "test"
+    id: int = 0  # subject_id or test_id depending on action
+    sub: int = 0  # subject_id when action == "test" (for back navigation)
 
 
 # Delete confirmation

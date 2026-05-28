@@ -9,6 +9,7 @@ import os
 import jwt as pyjwt
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from enum import Enum
 
 from supabase import AsyncClient
 from supabase.lib.client_options import AsyncClientOptions
@@ -21,6 +22,15 @@ supabase_admin: AsyncClient = None  # Admin client (bypasses RLS)
 supabase_url: str = None
 jwt_secret: str = None
 supabase_anon_key: str = os.getenv("SUPABASE_ANON_KEY") or os.getenv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY")
+
+
+class QuestionType(str, Enum):
+    """Question types for extensible question system."""
+    SINGLE_CHOICE = "single_choice"
+    MULTIPLE_CHOICE = "multiple_choice"
+    OPEN_ANSWER = "open_answer"
+    MATCHING = "matching"
+    ORDERING = "ordering"
 
 
 def init(admin_client: AsyncClient, jwt_secret_key: str, supabase_url_str: str) -> None:
@@ -203,10 +213,10 @@ async def deactivate_test(test_id: int, teacher_id: int) -> bool:
 
 # Questions & Options
 
-async def add_question(test_id: int, text: str, order: int) -> dict:
+async def add_question(test_id: int, text: str, order: int, question_type: str = QuestionType.SINGLE_CHOICE) -> dict:
     """Add question (admin insert, bypasses RLS)."""
     res = await supabase_admin.table("questions").insert(
-        {"test_id": test_id, "text": text, "question_order": order}
+        {"test_id": test_id, "text": text, "question_order": order, "question_type": question_type}
     ).execute()
     return res.data[0]
 
@@ -222,10 +232,11 @@ async def add_option(question_id: int, text: str, is_correct: bool) -> dict:
 async def bulk_insert_questions_options(test_id: int, questions: list[dict]) -> None:
     """
     Bulk insert questions and options (admin operation).
-    questions: [{"text": str, "options": [{"text": str, "is_correct": bool}]}]
+    questions: [{"text": str, "question_type": str, "options": [{"text": str, "is_correct": bool}]}]
     """
     for order, q in enumerate(questions):
-        q_row = await add_question(test_id, q["text"], order)
+        q_type = q.get("question_type", QuestionType.SINGLE_CHOICE)
+        q_row = await add_question(test_id, q["text"], order, q_type)
         for opt in q["options"]:
             await add_option(q_row["id"], opt["text"], opt["is_correct"])
 
@@ -261,6 +272,71 @@ async def save_answer(
     }).execute()
 
 
+async def save_multiple_answers(
+    session_id: int, question_id: int, option_ids: list[int]
+) -> None:
+    """Save multiple student answers for a question (admin insert, bypasses RLS)."""
+    for option_id in option_ids:
+        option = await get_option(option_id)
+        is_correct = option.get("is_correct", False) if option else False
+        await supabase_admin.table("session_answers").insert({
+            "session_id": session_id,
+            "question_id": question_id,
+            "option_id": option_id,
+            "is_correct": is_correct,
+        }).execute()
+
+
+async def get_question_score(session_id: int, question_id: int) -> float:
+    """
+    Calculate score for a question (0-1).
+    For single choice: 1 if correct, 0 if wrong.
+    For multiple choice: partial credit based on correct/incorrect selections.
+    For other types: returns 0.0 (to be implemented)
+    """
+    # Get all answers for this question in this session
+    answers_res = await supabase_admin.table("session_answers").select("*").eq("session_id", session_id).eq("question_id", question_id).execute()
+    answers = answers_res.data or []
+
+    # Get the question to check its type
+    question = await get_question(question_id)
+    if not question:
+        return 0.0
+
+    question_type = question.get("question_type", QuestionType.SINGLE_CHOICE)
+
+    if question_type == QuestionType.SINGLE_CHOICE:
+        # Single choice: 1 if at least one correct answer, 0 otherwise
+        for answer in answers:
+            if answer.get("is_correct"):
+                return 1.0
+        return 0.0
+    elif question_type == QuestionType.MULTIPLE_CHOICE:
+        # Multiple choice: calculate partial credit
+        # Get all correct options for this question
+        options_res = await supabase_admin.table("options").select("*").eq("question_id", question_id).execute()
+        options = options_res.data or []
+        correct_option_ids = {opt["id"] for opt in options if opt.get("is_correct")}
+        total_correct = len(correct_option_ids)
+
+        if total_correct == 0:
+            return 0.0
+
+        # Count correct and incorrect selections
+        selected_option_ids = {ans["option_id"] for ans in answers}
+        correct_selections = len(selected_option_ids & correct_option_ids)
+        incorrect_selections = len(selected_option_ids - correct_option_ids)
+
+        # Calculate partial credit
+        # Formula: (correct selections / total correct) - (incorrect selections * penalty)
+        # Penalty is 0.5 per incorrect selection to discourage guessing
+        score = (correct_selections / total_correct) - (incorrect_selections * 0.5)
+        return max(0.0, min(1.0, score))  # Clamp between 0 and 1
+    else:
+        # Other question types not yet implemented
+        return 0.0
+
+
 async def complete_session(session_id: int, score: int, percentage: float) -> None:
     """Save final score and percentage, mark as completed."""
     await supabase_admin.table("test_sessions").update({
@@ -278,10 +354,36 @@ async def get_session(session_id: int) -> Optional[dict]:
 
 async def get_session_score(session_id: int) -> int:
     """Compute the current score (number of correct answers) for a session."""
-    res = await supabase_admin.table("session_answers").select("is_correct").eq("session_id", session_id).execute()
-    if not res.data:
+    # Get the session to find the test
+    session = await get_session(session_id)
+    if not session:
         return 0
-    return sum(1 for r in res.data if r.get("is_correct"))
+
+    # Get all questions in the test
+    test_id = session.get("test_id")
+    questions_res = await supabase_admin.table("questions").select("id, question_type").eq("test_id", test_id).execute()
+    questions = questions_res.data or []
+
+    total_score = 0
+    for question in questions:
+        question_id = question["id"]
+        question_type = question.get("question_type", QuestionType.SINGLE_CHOICE)
+
+        if question_type == QuestionType.MULTIPLE_CHOICE:
+            # For multiple choice, use the partial credit scoring
+            score = await get_question_score(session_id, question_id)
+            total_score += score
+        elif question_type == QuestionType.SINGLE_CHOICE:
+            # For single choice, count correct answers
+            answers_res = await supabase_admin.table("session_answers").select("is_correct").eq("session_id", session_id).eq("question_id", question_id).execute()
+            answers = answers_res.data or []
+            if any(a.get("is_correct") for a in answers):
+                total_score += 1
+        else:
+            # Other question types not yet implemented
+            pass
+
+    return int(total_score)
 
 
 async def get_test_results(test_id: int, telegram_id: int) -> list[dict]:
@@ -422,13 +524,28 @@ async def get_option(option_id: int) -> Optional[dict]:
     return res.data[0] if res.data else None
 
 
-async def mark_option_correct(option_id: int, question_id: int) -> dict:
-    """Mark one option as correct and unmark siblings."""
-    await supabase_admin.table("options").update(
-        {"is_correct": False}
-    ).eq("question_id", question_id).execute()
+async def mark_option_correct(option_id: int, question_id: int, question_type: str = QuestionType.SINGLE_CHOICE) -> dict:
+    """Mark option as correct. For single choice, unmark siblings. For multiple choice, toggle."""
+    if question_type == QuestionType.SINGLE_CHOICE:
+        # Single choice: unmark all siblings first
+        await supabase_admin.table("options").update(
+            {"is_correct": False}
+        ).eq("question_id", question_id).execute()
+    # Mark this option as correct
     res = await supabase_admin.table("options").update(
         {"is_correct": True}
+    ).eq("id", option_id).execute()
+    return res.data[0] if res.data else {}
+
+
+async def toggle_option_correct(option_id: int) -> dict:
+    """Toggle the correctness of an option (for multiple choice questions)."""
+    option = await get_option(option_id)
+    if not option:
+        return {}
+    new_status = not option.get("is_correct", False)
+    res = await supabase_admin.table("options").update(
+        {"is_correct": new_status}
     ).eq("id", option_id).execute()
     return res.data[0] if res.data else {}
 
@@ -551,10 +668,90 @@ async def get_subject_statistics(teacher_id: int) -> list[dict]:
             if stats["total_sessions"] > 0 else 0
         )
         result.append({
+            "subject_id": stats["subject_id"],
             "subject_name": stats["subject_name"],
             "test_count": stats["test_count"],
             "total_sessions": stats["total_sessions"],
-            "average_score": avg_score
+            "average_score": avg_score,
         })
     
     return sorted(result, key=lambda x: x["subject_name"])
+
+
+async def get_subject_sessions(teacher_id: int, subject_id: int) -> list[dict]:
+    """Completed sessions for a teacher's subject with student name and test title."""
+    tests_res = (
+        await supabase_admin.table("tests")
+        .select("id, title")
+        .eq("teacher_id", teacher_id)
+        .eq("subject_id", subject_id)
+        .eq("is_active", True)
+        .execute()
+    )
+    tests = tests_res.data or []
+    if not tests:
+        return []
+
+    test_titles = {t["id"]: t["title"] for t in tests}
+    test_ids = list(test_titles.keys())
+    sessions_res = (
+        await supabase_admin.table("test_sessions")
+        .select("test_id, score, total_questions, percentage, completed_at, users(name)")
+        .in_("test_id", test_ids)
+        .not_.is_("completed_at", "null")
+        .order("completed_at", desc=True)
+        .execute()
+    )
+    sessions = sessions_res.data or []
+    for session in sessions:
+        session["test_title"] = test_titles.get(session["test_id"], "—")
+    return sessions
+
+
+async def get_subject_tests_stats(teacher_id: int, subject_id: int) -> list[dict]:
+    """Active tests in a subject with attempt count and average score."""
+    tests_res = (
+        await supabase_admin.table("tests")
+        .select("id, title")
+        .eq("teacher_id", teacher_id)
+        .eq("subject_id", subject_id)
+        .eq("is_active", True)
+        .order("title")
+        .execute()
+    )
+    tests = tests_res.data or []
+    if not tests:
+        return []
+
+    test_ids = [t["id"] for t in tests]
+    sessions_res = (
+        await supabase_admin.table("test_sessions")
+        .select("test_id, percentage")
+        .in_("test_id", test_ids)
+        .not_.is_("completed_at", "null")
+        .execute()
+    )
+    sessions = sessions_res.data or []
+
+    per_test: dict[int, dict] = {
+        t["id"]: {"id": t["id"], "title": t["title"], "session_count": 0, "total_score": 0.0}
+        for t in tests
+    }
+    for session in sessions:
+        tid = session["test_id"]
+        if tid not in per_test:
+            continue
+        per_test[tid]["session_count"] += 1
+        per_test[tid]["total_score"] += session.get("percentage", 0)
+
+    result = []
+    for item in per_test.values():
+        count = item["session_count"]
+        avg = round(item["total_score"] / count, 1) if count else 0
+        result.append({
+            "id": item["id"],
+            "title": item["title"],
+            "session_count": count,
+            "average_score": avg,
+        })
+    return sorted(result, key=lambda x: x["title"].casefold())

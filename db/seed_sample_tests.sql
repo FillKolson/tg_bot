@@ -1,5 +1,9 @@
 -- Sample tests for Quiz Bot. Run after creating at least one teacher.
 -- Gets teacher_id dynamically from the first teacher in the database.
+--
+-- Also seeds demo students (telegram_id 900000001–900000008), completed test
+-- sessions, and session_answers. Re-running the student block is safe: sample
+-- users and their sessions are removed first.
 
 -- Insert all sample subjects if they don't exist
 INSERT INTO subjects (name) VALUES
@@ -546,3 +550,695 @@ INSERT INTO options (question_id, text, is_correct) VALUES
 ((SELECT id FROM questions WHERE text = 'Темперура кипіння води за нормальних умов?'), '0°C', false),
 ((SELECT id FROM questions WHERE text = 'Темперура кипіння води за нормальних умов?'), '50°C', false),
 ((SELECT id FROM questions WHERE text = 'Темперура кипіння води за нормальних умов?'), '200°C', false);
+
+
+-- ============================================================
+--  Sample students, sessions, and answers
+-- ============================================================
+
+DELETE FROM session_answers
+WHERE session_id IN (
+    SELECT ts.id
+    FROM test_sessions ts
+    JOIN users u ON u.id = ts.student_id
+    WHERE u.telegram_id BETWEEN 900000001 AND 900000099
+);
+
+DELETE FROM test_sessions
+WHERE student_id IN (
+    SELECT id FROM users WHERE telegram_id BETWEEN 900000001 AND 900000099
+);
+
+DELETE FROM users WHERE telegram_id BETWEEN 900000001 AND 900000099;
+
+INSERT INTO users (telegram_id, name, role, language) VALUES
+    (900000001, 'Олена Коваленко', 'student', 'uk'),
+    (900000002, 'Іван Петренко', 'student', 'uk'),
+    (900000003, 'Марія Шевченко', 'student', 'uk'),
+    (900000004, 'Андрій Бондаренко', 'student', 'uk'),
+    (900000005, 'Софія Мельник', 'student', 'uk'),
+    (900000006, 'Дмитро Іваненко', 'student', 'uk'),
+    (900000007, 'Катерина Лисенко', 'student', 'uk'),
+    (900000008, 'Максим Ткаченко', 'student', 'en');
+
+
+-- Helper: insert one completed session and answers for single-choice tests.
+-- p_wrong: array of question texts answered incorrectly (empty = all correct).
+DO $seed$
+DECLARE
+    v_sid BIGINT;
+    v_tid BIGINT;
+    v_uid BIGINT;
+    v_wrong TEXT[] := ARRAY[]::TEXT[];
+BEGIN
+    -- ── Столиці світу (4 питання) ──────────────────────────────────────────
+    SELECT id INTO v_tid FROM tests WHERE title = 'Столиці світу' LIMIT 1;
+
+    v_wrong := ARRAY[]::TEXT[];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000001;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 4, 4, 100, NOW() - INTERVAL '8 days', NOW() - INTERVAL '8 days' + INTERVAL '6 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid
+      AND NOT (q.text = ANY (v_wrong));
+
+    v_wrong := ARRAY['Яка столиця Іспанії?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000002;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 3, 4, 75, NOW() - INTERVAL '7 days', NOW() - INTERVAL '7 days' + INTERVAL '9 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false
+    FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Барселона'
+    WHERE q.test_id = v_tid AND q.text = 'Яка столиця Іспанії?';
+
+    v_wrong := ARRAY[]::TEXT[];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000003;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 4, 4, 100, NOW() - INTERVAL '6 days', NOW() - INTERVAL '6 days' + INTERVAL '5 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+
+    v_wrong := ARRAY['Яка столиця Франції?', 'Яка столиця Німеччини?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000004;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 2, 4, 50, NOW() - INTERVAL '5 days', NOW() - INTERVAL '5 days' + INTERVAL '11 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Ліон'
+    WHERE q.test_id = v_tid AND q.text = 'Яка столиця Франції?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Мюнхен'
+    WHERE q.test_id = v_tid AND q.text = 'Яка столиця Німеччини?';
+
+    v_wrong := ARRAY['Яка столиця Італії?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000005;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 3, 4, 75, NOW() - INTERVAL '4 days', NOW() - INTERVAL '4 days' + INTERVAL '7 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Мілан'
+    WHERE q.test_id = v_tid AND q.text = 'Яка столиця Італії?';
+
+    -- ── Історія України (4) ─────────────────────────────────────────────────
+    SELECT id INTO v_tid FROM tests WHERE title = 'Історія України' LIMIT 1;
+
+    v_wrong := ARRAY[]::TEXT[];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000001;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 4, 4, 100, NOW() - INTERVAL '10 days', NOW() - INTERVAL '10 days' + INTERVAL '12 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+
+    v_wrong := ARRAY['Коли відбулася Хрещення Русі?', 'Коли Україна проголосила незалежність?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000002;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 2, 4, 50, NOW() - INTERVAL '9 days', NOW() - INTERVAL '9 days' + INTERVAL '14 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '1015 рік'
+    WHERE q.test_id = v_tid AND q.text = 'Коли відбулася Хрещення Русі?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '1 грудня 1991 року'
+    WHERE q.test_id = v_tid AND q.text = 'Коли Україна проголосила незалежність?';
+
+    -- Друга спроба Івана (покращення)
+    v_wrong := ARRAY['Яка битва відбулася у 1240 році?'];
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 3, 4, 75, NOW() - INTERVAL '3 days', NOW() - INTERVAL '3 days' + INTERVAL '10 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Битва під Полтавою'
+    WHERE q.test_id = v_tid AND q.text = 'Яка битва відбулася у 1240 році?';
+
+    v_wrong := ARRAY['Хто був гетьманом України у 1648 році?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000006;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 3, 4, 75, NOW() - INTERVAL '5 days', NOW() - INTERVAL '5 days' + INTERVAL '13 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Іван Мазепа'
+    WHERE q.test_id = v_tid AND q.text = 'Хто був гетьманом України у 1648 році?';
+
+    v_wrong := ARRAY[
+        'Коли відбулася Хрещення Русі?',
+        'Хто був гетьманом України у 1648 році?',
+        'Коли Україна проголосила незалежність?'
+    ];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000008;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 1, 4, 25, NOW() - INTERVAL '2 days', NOW() - INTERVAL '2 days' + INTERVAL '15 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '1015 рік'
+    WHERE q.test_id = v_tid AND q.text = 'Коли відбулася Хрещення Русі?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Іван Мазепа'
+    WHERE q.test_id = v_tid AND q.text = 'Хто був гетьманом України у 1648 році?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '1 грудня 1991 року'
+    WHERE q.test_id = v_tid AND q.text = 'Коли Україна проголосила незалежність?';
+
+    -- ── Планети Сонячної системи (4) ───────────────────────────────────────
+    SELECT id INTO v_tid FROM tests WHERE title = 'Планети Сонячної системи' LIMIT 1;
+
+    v_wrong := ARRAY['Скільки планет у Сонячній системі?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000003;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 3, 4, 75, NOW() - INTERVAL '6 days', NOW() - INTERVAL '6 days' + INTERVAL '8 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '9'
+    WHERE q.test_id = v_tid AND q.text = 'Скільки планет у Сонячній системі?';
+
+    v_wrong := ARRAY[]::TEXT[];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000007;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 4, 4, 100, NOW() - INTERVAL '4 days', NOW() - INTERVAL '4 days' + INTERVAL '6 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid;
+
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000008;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 0, 4, 0, NOW() - INTERVAL '1 day', NOW() - INTERVAL '1 day' + INTERVAL '10 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '9'
+    WHERE q.test_id = v_tid AND q.text = 'Скільки планет у Сонячній системі?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Земля'
+    WHERE q.test_id = v_tid AND q.text = 'Яка планета найближча до Сонця?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Сатурн'
+    WHERE q.test_id = v_tid AND q.text = 'Яка планета найбільша у Сонячній системі?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Венера'
+    WHERE q.test_id = v_tid AND q.text = 'Яка планета відома як "Червона планета"?';
+
+    -- ── English Grammar Basics (4) ─────────────────────────────────────────
+    SELECT id INTO v_tid FROM tests WHERE title = 'English Grammar Basics' LIMIT 1;
+
+    v_wrong := ARRAY[]::TEXT[];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000005;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 4, 4, 100, NOW() - INTERVAL '7 days', NOW() - INTERVAL '7 days' + INTERVAL '8 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid;
+
+    v_wrong := ARRAY['What is past tense of "go"?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000002;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 3, 4, 75, NOW() - INTERVAL '6 days', NOW() - INTERVAL '6 days' + INTERVAL '9 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'goed'
+    WHERE q.test_id = v_tid AND q.text = 'What is past tense of "go"?';
+
+    v_wrong := ARRAY[]::TEXT[];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000004;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 4, 4, 100, NOW() - INTERVAL '5 days', NOW() - INTERVAL '5 days' + INTERVAL '7 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.is_correct WHERE q.test_id = v_tid;
+
+    v_wrong := ARRAY[
+        'What is correct form: "She ___ to school every day"?',
+        'Choose correct article: "___ apple a day keeps doctor away"'
+    ];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000001;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 2, 4, 50, NOW() - INTERVAL '3 days', NOW() - INTERVAL '3 days' + INTERVAL '11 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'go'
+    WHERE q.test_id = v_tid AND q.text = 'What is correct form: "She ___ to school every day"?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'A'
+    WHERE q.test_id = v_tid
+      AND q.text = 'Choose correct article: "___ apple a day keeps doctor away"';
+
+    v_wrong := ARRAY[
+        'What is correct form: "She ___ to school every day"?',
+        'Choose correct article: "___ apple a day keeps doctor away"',
+        'What is past tense of "go"?'
+    ];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000006;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 1, 4, 25, NOW() - INTERVAL '2 days', NOW() - INTERVAL '2 days' + INTERVAL '12 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'go'
+    WHERE q.test_id = v_tid AND q.text = 'What is correct form: "She ___ to school every day"?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'A'
+    WHERE q.test_id = v_tid
+      AND q.text = 'Choose correct article: "___ apple a day keeps doctor away"';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'goed'
+    WHERE q.test_id = v_tid AND q.text = 'What is past tense of "go"?';
+
+    -- ── Grundlagen der deutschen Sprache (4) ───────────────────────────────
+    SELECT id INTO v_tid FROM tests WHERE title = 'Grundlagen der deutschen Sprache' LIMIT 1;
+
+    v_wrong := ARRAY['Welcher Artikel gehört zu "Buch"?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000007;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 3, 4, 75, NOW() - INTERVAL '5 days', NOW() - INTERVAL '5 days' + INTERVAL '9 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'der'
+    WHERE q.test_id = v_tid AND q.text = 'Welcher Artikel gehört zu "Buch"?';
+
+    v_wrong := ARRAY['Was bedeutet "Haus" auf Englisch?', 'Wie heißt "cat" auf Deutsch?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000002;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 2, 4, 50, NOW() - INTERVAL '4 days', NOW() - INTERVAL '4 days' + INTERVAL '10 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'home'
+    WHERE q.test_id = v_tid AND q.text = 'Was bedeutet "Haus" auf Englisch?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Hund'
+    WHERE q.test_id = v_tid AND q.text = 'Wie heißt "cat" auf Deutsch?';
+
+    -- ── Історія України (розширена) (4) ────────────────────────────────────
+    SELECT id INTO v_tid FROM tests WHERE title = 'Історія України (розширена)' LIMIT 1;
+
+    v_wrong := ARRAY['Коли прийнято Конституцію України?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000004;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 3, 4, 75, NOW() - INTERVAL '6 days', NOW() - INTERVAL '6 days' + INTERVAL '11 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '24 серпня 1991'
+    WHERE q.test_id = v_tid AND q.text = 'Коли прийнято Конституцію України?';
+
+    v_wrong := ARRAY[]::TEXT[];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000003;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 4, 4, 100, NOW() - INTERVAL '4 days', NOW() - INTERVAL '4 days' + INTERVAL '9 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.is_correct WHERE q.test_id = v_tid;
+
+    v_wrong := ARRAY['Рік проголошення Незалежності України?', 'Хто був першим Президентом України?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000008;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 2, 4, 50, NOW() - INTERVAL '2 days', NOW() - INTERVAL '2 days' + INTERVAL '13 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '1990'
+    WHERE q.test_id = v_tid AND q.text = 'Рік проголошення Незалежності України?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Леонід Кучма'
+    WHERE q.test_id = v_tid AND q.text = 'Хто був першим Президентом України?';
+
+    -- ── Базова математика (5) ──────────────────────────────────────────────
+    SELECT id INTO v_tid FROM tests WHERE title = 'Базова математика' LIMIT 1;
+
+    v_wrong := ARRAY[]::TEXT[];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000001;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 5, 5, 100, NOW() - INTERVAL '9 days', NOW() - INTERVAL '9 days' + INTERVAL '8 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.is_correct WHERE q.test_id = v_tid;
+
+    v_wrong := ARRAY['√64 = ?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000002;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 4, 5, 80, NOW() - INTERVAL '8 days', NOW() - INTERVAL '8 days' + INTERVAL '10 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '6'
+    WHERE q.test_id = v_tid AND q.text = '√64 = ?';
+
+    v_wrong := ARRAY[]::TEXT[];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000003;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 5, 5, 100, NOW() - INTERVAL '7 days', NOW() - INTERVAL '7 days' + INTERVAL '7 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.is_correct WHERE q.test_id = v_tid;
+
+    v_wrong := ARRAY['10 × 5 = ?', '2³ = ?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000004;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 3, 5, 60, NOW() - INTERVAL '5 days', NOW() - INTERVAL '5 days' + INTERVAL '12 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '15'
+    WHERE q.test_id = v_tid AND q.text = '10 × 5 = ?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '6'
+    WHERE q.test_id = v_tid AND q.text = '2³ = ?';
+
+    v_wrong := ARRAY['15 ÷ 3 = ?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000005;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 4, 5, 80, NOW() - INTERVAL '4 days', NOW() - INTERVAL '4 days' + INTERVAL '9 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '12'
+    WHERE q.test_id = v_tid AND q.text = '15 ÷ 3 = ?';
+
+    v_wrong := ARRAY['2 + 2 = ?', '10 × 5 = ?', '√64 = ?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000006;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 2, 5, 40, NOW() - INTERVAL '3 days', NOW() - INTERVAL '3 days' + INTERVAL '14 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '3'
+    WHERE q.test_id = v_tid AND q.text = '2 + 2 = ?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '15'
+    WHERE q.test_id = v_tid AND q.text = '10 × 5 = ?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '6'
+    WHERE q.test_id = v_tid AND q.text = '√64 = ?';
+
+    -- ── Українська література (3) ──────────────────────────────────────────
+    SELECT id INTO v_tid FROM tests WHERE title = 'Українська література' LIMIT 1;
+
+    v_wrong := ARRAY[]::TEXT[];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000005;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 3, 3, 100, NOW() - INTERVAL '6 days', NOW() - INTERVAL '6 days' + INTERVAL '6 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.is_correct WHERE q.test_id = v_tid;
+
+    v_wrong := ARRAY['Хто написав "Лісова пісня"?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000007;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 2, 3, 67, NOW() - INTERVAL '4 days', NOW() - INTERVAL '4 days' + INTERVAL '8 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Марко Вовчок'
+    WHERE q.test_id = v_tid AND q.text = 'Хто написав "Лісова пісня"?';
+
+    v_wrong := ARRAY['Хто написав "Кобзар"?', 'Автор "Захар Беркут"?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000002;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 1, 3, 33, NOW() - INTERVAL '2 days', NOW() - INTERVAL '2 days' + INTERVAL '7 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Іван Франко'
+    WHERE q.test_id = v_tid AND q.text = 'Хто написав "Кобзар"?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Тарас Шевченко'
+    WHERE q.test_id = v_tid AND q.text = 'Автор "Захар Беркут"?';
+
+    -- ── Основи біології (4) ─────────────────────────────────────────────────
+    SELECT id INTO v_tid FROM tests WHERE title = 'Основи біології' LIMIT 1;
+
+    v_wrong := ARRAY['Хто відкрив пеніцилін?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000003;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 3, 4, 75, NOW() - INTERVAL '5 days', NOW() - INTERVAL '5 days' + INTERVAL '10 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Луї Пастер'
+    WHERE q.test_id = v_tid AND q.text = 'Хто відкрив пеніцилін?';
+
+    v_wrong := ARRAY[]::TEXT[];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000004;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 4, 4, 100, NOW() - INTERVAL '4 days', NOW() - INTERVAL '4 days' + INTERVAL '8 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.is_correct WHERE q.test_id = v_tid;
+
+    v_wrong := ARRAY['Найбільша кістка в людському тілі?', 'Скільки камер у серці людини?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000006;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 2, 4, 50, NOW() - INTERVAL '3 days', NOW() - INTERVAL '3 days' + INTERVAL '11 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Череп'
+    WHERE q.test_id = v_tid AND q.text = 'Найбільша кістка в людському тілі?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '2'
+    WHERE q.test_id = v_tid AND q.text = 'Скільки камер у серці людини?';
+
+    v_wrong := ARRAY[]::TEXT[];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000001;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 4, 4, 100, NOW() - INTERVAL '2 days', NOW() - INTERVAL '2 days' + INTERVAL '9 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.is_correct WHERE q.test_id = v_tid;
+
+    -- ── Основи хімії (3) ────────────────────────────────────────────────────
+    SELECT id INTO v_tid FROM tests WHERE title = 'Основи хімії' LIMIT 1;
+
+    v_wrong := ARRAY['Атомний номер водню?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000002;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 2, 3, 67, NOW() - INTERVAL '5 days', NOW() - INTERVAL '5 days' + INTERVAL '7 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '2'
+    WHERE q.test_id = v_tid AND q.text = 'Атомний номер водню?';
+
+    v_wrong := ARRAY[]::TEXT[];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000005;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 3, 3, 100, NOW() - INTERVAL '3 days', NOW() - INTERVAL '3 days' + INTERVAL '6 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.is_correct WHERE q.test_id = v_tid;
+
+    v_wrong := ARRAY['Хімічна формула води?', 'Що таке pH 7?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000008;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 1, 3, 33, NOW() - INTERVAL '1 day', NOW() - INTERVAL '1 day' + INTERVAL '8 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'CO₂'
+    WHERE q.test_id = v_tid AND q.text = 'Хімічна формула води?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Кислий'
+    WHERE q.test_id = v_tid AND q.text = 'Що таке pH 7?';
+
+    -- ── Основи фізики (4) ───────────────────────────────────────────────────
+    SELECT id INTO v_tid FROM tests WHERE title = 'Основи фізики' LIMIT 1;
+
+    v_wrong := ARRAY['Швидкість світла у вакуумі?', 'Що вимірюється в Ньютонах?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000004;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 2, 4, 50, NOW() - INTERVAL '5 days', NOW() - INTERVAL '5 days' + INTERVAL '12 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '150,000 км/с'
+    WHERE q.test_id = v_tid AND q.text = 'Швидкість світла у вакуумі?';
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Маса'
+    WHERE q.test_id = v_tid AND q.text = 'Що вимірюється в Ньютонах?';
+
+    v_wrong := ARRAY['Темперура кипіння води за нормальних умов?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000007;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 3, 4, 75, NOW() - INTERVAL '3 days', NOW() - INTERVAL '3 days' + INTERVAL '10 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = '0°C'
+    WHERE q.test_id = v_tid
+      AND q.text = 'Темперура кипіння води за нормальних умов?';
+
+    v_wrong := ARRAY['Що таке гравітація?'];
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000006;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 3, 4, 75, NOW() - INTERVAL '2 days', NOW() - INTERVAL '2 days' + INTERVAL '11 minutes')
+    RETURNING id INTO v_sid;
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, o.is_correct
+    FROM questions q JOIN options o ON o.question_id = q.id AND o.is_correct
+    WHERE q.test_id = v_tid AND NOT (q.text = ANY (v_wrong));
+    INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
+    SELECT v_sid, q.id, o.id, false FROM questions q
+    JOIN options o ON o.question_id = q.id AND o.text = 'Сила відштовхування'
+    WHERE q.test_id = v_tid AND q.text = 'Що таке гравітація?';
+
+END $seed$;
