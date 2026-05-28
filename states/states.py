@@ -7,6 +7,13 @@ class AuthStates(StatesGroup):
     entering_name = State()
 
 
+class ProfileStates(StatesGroup):
+    viewing = State()
+    choosing_action = State()
+    changing_language = State()
+    changing_name = State()
+
+
 class TeacherStates(StatesGroup):
     # Create test wizard
     entering_title = State()
@@ -17,6 +24,7 @@ class TeacherStates(StatesGroup):
     choosing_attempts = State()
     choosing_limited_attempts = State()
     choosing_visibility = State()
+    choosing_time_limit = State()
 
     # Adding questions
     entering_question_text = State()
@@ -25,6 +33,7 @@ class TeacherStates(StatesGroup):
 
     # Managing existing tests
     viewing_tests_and_results = State()
+    viewing_tests_by_subject = State()
 
     # Edit test
     editing_test = State()              # viewing edit menu
@@ -33,6 +42,7 @@ class TeacherStates(StatesGroup):
     editing_test_visibility = State()
     editing_test_attempts = State()
     editing_test_limited_attempts = State()
+    editing_test_time_limit = State()
     editing_questions_menu = State()    # viewing list of questions
     selecting_question_to_edit = State()
     editing_question_text = State()

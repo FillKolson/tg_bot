@@ -9,6 +9,10 @@ class LangCallback(CallbackData, prefix="lang"):
     value: str  # "uk" | "en"
 
 
+class ProfileCallback(CallbackData, prefix="prof"):
+    action: str  # "view" | "change_lang" | "change_name"
+
+
 class SubjectCallback(CallbackData, prefix="subj"):
     id: int
 
@@ -64,7 +68,7 @@ class EditTestCallback(CallbackData, prefix="editest"):
 
 class EditQuestionCallback(CallbackData, prefix="editq"):
     id: int
-    action: str  # "edit" | "delete"
+    action: str  # "edit" | "text" | "options" | "delete"
 
 
 class EditOptionCallback(CallbackData, prefix="edito"):
@@ -92,3 +96,9 @@ class StatisticsCallback(CallbackData, prefix="stats"):
 
 class ConfirmDeleteCallback(CallbackData, prefix="delconf"):
     action: str  # "yes" | "no"
+
+
+# Teacher tests by subject
+
+class TeacherTestsSubjectCallback(CallbackData, prefix="tsubj"):
+    id: int  # subject_id

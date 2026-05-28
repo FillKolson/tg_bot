@@ -56,6 +56,14 @@ async def update_user_language(telegram_id: int, language: str) -> Optional[dict
     return res.data[0] if res.data else None
 
 
+async def update_user_name(telegram_id: int, name: str) -> Optional[dict]:
+    """Change user's name."""
+    res = await supabase_admin.table("users").update(
+        {"name": name}
+    ).eq("telegram_id", telegram_id).execute()
+    return res.data[0] if res.data else None
+
+
 # Subjects
 
 async def get_subjects(telegram_id: int = None) -> list[dict]:
@@ -92,6 +100,7 @@ async def create_test(
     description: Optional[str],
     show_answer_correctness: bool = True,
     max_attempts: Optional[int] = None,
+    time_limit_minutes: Optional[int] = None,
 ) -> dict:
     """Create new test with given parameters."""
     res = await supabase_admin.table("tests").insert({
@@ -103,6 +112,7 @@ async def create_test(
         "description": description,
         "show_answer_correctness": show_answer_correctness,
         "max_attempts": max_attempts,
+        "time_limit_minutes": time_limit_minutes,
     }).execute()
     return res.data[0]
 
@@ -222,13 +232,20 @@ async def bulk_insert_questions_options(test_id: int, questions: list[dict]) -> 
 
 # Sessions & Answers
 
-async def create_session(test_id: int, student_id: int, total_questions: int) -> dict:
-    """Create test session (admin insert, bypasses RLS)."""
-    res = await supabase_admin.table("test_sessions").insert({
+async def create_session(test_id: int, student_id: int, total_questions: int, expires_at: Optional[str] = None) -> dict:
+    """Create test session (admin insert, bypasses RLS).
+    Optionally set an expires_at ISO timestamp for timed tests.
+    """
+    payload = {
         "test_id": test_id,
         "student_id": student_id,
         "total_questions": total_questions,
-    }).execute()
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if expires_at:
+        payload["expires_at"] = expires_at
+
+    res = await supabase_admin.table("test_sessions").insert(payload).execute()
     return res.data[0]
 
 
@@ -251,6 +268,20 @@ async def complete_session(session_id: int, score: int, percentage: float) -> No
         "percentage": percentage,
         "completed_at": datetime.now(timezone.utc).isoformat(),
     }).eq("id", session_id).execute()
+
+
+async def get_session(session_id: int) -> Optional[dict]:
+    """Fetch a single test session by ID."""
+    res = await supabase_admin.table("test_sessions").select("*").eq("id", session_id).execute()
+    return res.data[0] if res.data else None
+
+
+async def get_session_score(session_id: int) -> int:
+    """Compute the current score (number of correct answers) for a session."""
+    res = await supabase_admin.table("session_answers").select("is_correct").eq("session_id", session_id).execute()
+    if not res.data:
+        return 0
+    return sum(1 for r in res.data if r.get("is_correct"))
 
 
 async def get_test_results(test_id: int, telegram_id: int) -> list[dict]:
@@ -315,6 +346,8 @@ async def update_test(
     access_code: Optional[str] = None,
     show_answer_correctness: Optional[bool] = None,
     max_attempts: Optional[int] = None,
+    time_limit_minutes: Optional[int] = None,
+    set_time_limit: bool = False,
 ) -> dict:
     """Update test fields (admin operation)."""
     update_data = {}
@@ -330,6 +363,8 @@ async def update_test(
         update_data["show_answer_correctness"] = show_answer_correctness
     if max_attempts is not None:
         update_data["max_attempts"] = max_attempts
+    if set_time_limit:
+        update_data["time_limit_minutes"] = time_limit_minutes
     
     res = await supabase_admin.table("tests").update(update_data).eq("id", test_id).execute()
     return res.data[0] if res.data else {}
@@ -373,6 +408,29 @@ async def get_options_by_question(question_id: int) -> list[dict]:
         .execute()
     )
     return res.data or []
+
+
+async def get_question(question_id: int) -> Optional[dict]:
+    """Get a question by ID."""
+    res = await supabase_admin.table("questions").select("*").eq("id", question_id).execute()
+    return res.data[0] if res.data else None
+
+
+async def get_option(option_id: int) -> Optional[dict]:
+    """Get an option by ID."""
+    res = await supabase_admin.table("options").select("*").eq("id", option_id).execute()
+    return res.data[0] if res.data else None
+
+
+async def mark_option_correct(option_id: int, question_id: int) -> dict:
+    """Mark one option as correct and unmark siblings."""
+    await supabase_admin.table("options").update(
+        {"is_correct": False}
+    ).eq("question_id", question_id).execute()
+    res = await supabase_admin.table("options").update(
+        {"is_correct": True}
+    ).eq("id", option_id).execute()
+    return res.data[0] if res.data else {}
 
 
 async def update_option(option_id: int, text: str, is_correct: bool) -> dict:
