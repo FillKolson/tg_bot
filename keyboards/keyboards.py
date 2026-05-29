@@ -14,7 +14,7 @@ from .callbacks import (
     AnswerVisibilityCallback, AttemptsCallback, LimitedAttemptsCallback,
     EditTestCallback, EditQuestionCallback, EditOptionCallback,
     SearchCallback, TeacherFilterCallback, StatisticsCallback, ConfirmDeleteCallback,
-    TeacherTestsSubjectCallback, ProfileCallback,
+    TeacherTestsSubjectCallback, ProfileCallback, StudentResultsCallback,
 )
 
 
@@ -297,6 +297,8 @@ def edit_test_menu_keyboard(test_id: int) -> InlineKeyboardMarkup:
                               callback_data=EditTestCallback(id=test_id, action="attempts").pack())],
         [InlineKeyboardButton(text="⏱️ Обмеження часу",
                               callback_data=EditTestCallback(id=test_id, action="time").pack())],
+        [InlineKeyboardButton(text="📊 Шкала балів",
+                              callback_data=EditTestCallback(id=test_id, action="points").pack())],
         [InlineKeyboardButton(text="❓ Редагувати питання",
                               callback_data=EditTestCallback(id=test_id, action="questions").pack())],
         [InlineKeyboardButton(text="⬅️ Назад",
@@ -454,6 +456,64 @@ def statistics_subject_view_keyboard(
     if not rows:
         return None
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# Student results
+
+def student_results_subjects_keyboard(subjects: list[dict]) -> InlineKeyboardMarkup:
+    """One button per subject with average score."""
+    rows = []
+    for subj in subjects:
+        label = f"{subj['subject_name']} · {subj['average_score']}%"
+        rows.append([InlineKeyboardButton(
+            text=label[:64],
+            callback_data=StudentResultsCallback(
+                action="subject", id=subj["subject_id"],
+            ).pack(),
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def student_results_subject_view_keyboard(
+    tests: list[dict],
+    subject_id: int,
+    lang: str,
+    *,
+    show_test_buttons: bool,
+    show_overview_back: bool,
+) -> InlineKeyboardMarkup | None:
+    """Subject results: optional test drill-down and/or back to overview."""
+    rows = []
+    if show_test_buttons:
+        for test in tests:
+            label = f"{test['title'][:36]} · {round(test['best_percentage'])}%"
+            rows.append([InlineKeyboardButton(
+                text=label[:64],
+                callback_data=StudentResultsCallback(
+                    action="test", id=test["test_id"], sub=subject_id,
+                ).pack(),
+            )])
+    if show_overview_back:
+        rows.append([InlineKeyboardButton(
+            text=i18n("back", lang),
+            callback_data=StudentResultsCallback(action="view").pack(),
+        )])
+    if not rows:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def student_results_test_back_keyboard(
+    subject_id: int, lang: str, *, single_subject: bool,
+) -> InlineKeyboardMarkup:
+    """Back from test attempts to subject (or main view if only one subject)."""
+    if single_subject:
+        back_data = StudentResultsCallback(action="view").pack()
+    else:
+        back_data = StudentResultsCallback(action="subject", id=subject_id).pack()
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=i18n("back", lang), callback_data=back_data),
+    ]])
 
 
 # Delete confirmation

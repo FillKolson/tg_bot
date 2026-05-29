@@ -75,6 +75,7 @@ CREATE TABLE tests (
     show_answer_correctness  BOOLEAN DEFAULT TRUE,         -- teacher decides if answers are shown
     max_attempts             INTEGER,                      -- NULL = unlimited attempts
     time_limit_minutes       INTEGER,                      -- NULL = no time limit
+    max_points               REAL,                         -- teacher scale: points for 100% correct
     created_at               TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -97,12 +98,15 @@ CREATE TABLE options (
 );
 
 -- Test sessions (one per student per test attempt)
+-- score: earned points on teacher scale (REAL, typically one decimal)
+-- percentage: 0–100 for rankings/stats; score = ratio(correct) * max_points
 CREATE TABLE test_sessions (
     id              BIGSERIAL PRIMARY KEY,
     test_id         BIGINT REFERENCES tests(id) ON DELETE CASCADE,
     student_id      BIGINT REFERENCES users(id) ON DELETE CASCADE,
-    score           INTEGER DEFAULT 0,
+    score           REAL DEFAULT 0,                          -- scaled points (not raw question count)
     total_questions INTEGER DEFAULT 0,
+    max_points      REAL,                                  -- scale snapshot when attempt started
     percentage      REAL DEFAULT 0,
     started_at      TIMESTAMPTZ DEFAULT NOW(),
     expires_at      TIMESTAMPTZ,
@@ -298,3 +302,28 @@ CREATE POLICY "session_answers_update_own_session" ON session_answers
             AND test_sessions.student_id = (SELECT id FROM users WHERE telegram_id = (auth.jwt() ->> 'telegram_id')::BIGINT LIMIT 1)
         )
     );
+
+-- ============================================================
+--  SCORING SCALE (max_points) — backfill for seed / legacy rows
+-- ============================================================
+-- Teacher sets tests.max_points (e.g. 12 for a perfect test). On each attempt the bot
+-- stores test_sessions.max_points as a snapshot and writes test_sessions.score as
+-- round(ratio * max_points, 1), where ratio is the sum of per-question credits (0–1).
+-- If max_points is missing, default to the number of questions (1 point per question).
+-- Re-run after db/seed_sample_tests.sql (seed ends with the same block).
+
+UPDATE tests t
+SET max_points = sub.cnt
+FROM (
+    SELECT test_id, COUNT(*)::REAL AS cnt
+    FROM questions
+    GROUP BY test_id
+) sub
+WHERE t.id = sub.test_id AND t.max_points IS NULL;
+
+UPDATE test_sessions ts
+SET max_points = COALESCE(
+    (SELECT t.max_points FROM tests t WHERE t.id = ts.test_id),
+    ts.total_questions::REAL
+)
+WHERE ts.max_points IS NULL AND ts.completed_at IS NOT NULL;

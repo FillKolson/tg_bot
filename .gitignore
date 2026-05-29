@@ -1,8 +1,65 @@
+# --- Secrets ---
 .env
+.env.*
+
+# --- Python ---
 __pycache__/
 *.py[cod]
+*$py.class
 *.pyo
 *.pyd
-requirements.txt
+.Python
+.venv/
+venv/
+env/
+ENV/
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+pip-wheel-metadata/
+
+# --- Test / type-check caches ---
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+
+# --- IDE & editors ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- OS ---
 .DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+
+# --- Logs & runtime ---
+*.log
+logs/
+
+# --- Database ---
+*.dump
+*.sql.backup
+*.sql.bak
+/backups/
+/dumps/
+# Local DB files (if you ever run Postgres/SQLite locally):
+*.db
+*.sqlite
+*.sqlite3
+pgdata/
+postgres-data/
+
+# --- Cursor (local) ---
 PROJECT_REQUIREMENTS.md
+requirements.txt

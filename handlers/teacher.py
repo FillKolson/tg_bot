@@ -37,7 +37,7 @@ from states.states import TeacherStates
 logger = logging.getLogger(__name__)
 router = Router()
 
-MAX_OPTIONS = 4  # per question
+MAX_OPTIONS = 10  # per question
 
 
 # Auth check - reject non-teachers
@@ -155,8 +155,8 @@ def _format_stats_overview(stats: list[dict], lang: str) -> str:
 def _format_student_result_line(session: dict, lang: str, *, show_test: bool) -> str:
     name = (session.get("users") or {}).get("name") or "—"
     pct = round(session.get("percentage", 0))
-    score = session.get("score", 0)
-    total = session.get("total_questions", 0)
+    score = queries.format_points_value(session.get("score", 0))
+    total = queries.format_points_value(queries.session_points_total(session))
     if show_test:
         return i18n(
             "stats_student_test", lang,
@@ -416,6 +416,21 @@ async def choose_visibility(callback: CallbackQuery, callback_data: VisibilityCa
 
 
 
+async def _prompt_max_points(message: Message, state: FSMContext, lang: str) -> None:
+    await message.answer(i18n("max_points_prompt", lang), parse_mode="Markdown")
+    await state.set_state(TeacherStates.choosing_max_points)
+
+
+def _parse_max_points(text: str) -> Optional[int]:
+    try:
+        value = int(text.strip())
+        if 1 <= value <= 1000:
+            return value
+    except ValueError:
+        pass
+    return None
+
+
 @router.message(TeacherStates.choosing_time_limit, F.text)
 async def choose_time_limit(message: Message, state: FSMContext) -> None:
     user = await queries.get_user(message.from_user.id)
@@ -423,8 +438,7 @@ async def choose_time_limit(message: Message, state: FSMContext) -> None:
     text = message.text.strip()
     if text.lower() == "/skip":
         await state.update_data(time_limit_minutes=None)
-        await message.answer(i18n("add_questions_prompt", lang), parse_mode="Markdown")
-        await state.set_state(TeacherStates.entering_question_text)
+        await _prompt_max_points(message, state, lang)
         return
 
     try:
@@ -437,6 +451,20 @@ async def choose_time_limit(message: Message, state: FSMContext) -> None:
 
     await state.update_data(time_limit_minutes=minutes)
     await message.answer(i18n("time_limit_set", lang, minutes=minutes), parse_mode="Markdown")
+    await _prompt_max_points(message, state, lang)
+
+
+@router.message(TeacherStates.choosing_max_points, F.text)
+async def choose_max_points(message: Message, state: FSMContext) -> None:
+    user = await queries.get_user(message.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+    points = _parse_max_points(message.text)
+    if points is None:
+        await message.answer(i18n("max_points_invalid", lang))
+        return
+
+    await state.update_data(max_points=points)
+    await message.answer(i18n("max_points_set", lang, points=points), parse_mode="Markdown")
     await message.answer(i18n("add_questions_prompt", lang), parse_mode="Markdown")
     await state.set_state(TeacherStates.entering_question_text)
 
@@ -710,6 +738,7 @@ async def _finish_test(callback: CallbackQuery, state: FSMContext) -> None:
         show_answer_correctness=data.get("show_answer_correctness", True),
         max_attempts=data.get("max_attempts"),
         time_limit_minutes=data.get("time_limit_minutes"),
+        max_points=data.get("max_points"),
     )
     await queries.bulk_insert_questions_options(test["id"], questions)
     await state.clear()
@@ -729,6 +758,10 @@ async def _finish_test(callback: CallbackQuery, state: FSMContext) -> None:
     if data.get("time_limit_minutes") is not None:
         time_limit_line = f"⏱️ Ліміт часу: *{data['time_limit_minutes']} хв.*\n"
 
+    points_line = ""
+    if data.get("max_points") is not None:
+        points_line = f"📊 Максимум балів: *{data['max_points']}*\n"
+
     await callback.message.edit_text(
         i18n(
             "test_created",
@@ -736,7 +769,7 @@ async def _finish_test(callback: CallbackQuery, state: FSMContext) -> None:
             title=data["title"],
             subject=data["subject_name"],
             count=len(questions),
-            access_line=("🌐 Публічний\n" if data["is_public"] else "🔒 Приватний\n") + attempts_info + time_limit_line + code_line,
+            access_line=("🌐 Публічний\n" if data["is_public"] else "🔒 Приватний\n") + attempts_info + time_limit_line + points_line + code_line,
             public_note="",
         ),
         parse_mode="Markdown",
@@ -1145,13 +1178,16 @@ async def edit_test_menu(callback: CallbackQuery, callback_data: EditTestCallbac
     vis_text = "Публічний" if test["is_public"] else "Приватний"
     att_text = f"{test['max_attempts']} спроб" if test['max_attempts'] else "Необмежено"
     time_text = f"{test['time_limit_minutes']} хв." if test.get("time_limit_minutes") is not None else "Немає"
+    pts = test.get("max_points")
+    points_text = f"{queries.format_points_value(pts)}" if pts is not None else "—"
     
     await callback.message.edit_text(
         f"✏️ *Редагування тесту*\n\n"
         f"📝 Назва: *{test['title']}*\n"
         f"🔍 Видимість: {badge} {vis_text}\n"
         f"⏱️ Спроби: {att_text}\n"
-        f"⏱️ Ліміт часу: {time_text}\n\n"
+        f"⏱️ Ліміт часу: {time_text}\n"
+        f"📊 Максимум балів: {points_text}\n\n"
         "Оберіть що редагувати:",
         reply_markup=edit_test_menu_keyboard(callback_data.id),
         parse_mode="Markdown",
@@ -1374,6 +1410,50 @@ async def edit_test_time_limit_save(message: Message, state: FSMContext) -> None
         await queries.update_test(test_id, time_limit_minutes=minutes, set_time_limit=True)
         await message.answer(f"✅ Ліміт часу оновлено: *{minutes} хв.*", parse_mode="Markdown")
 
+    await message.answer(
+        f"✏️ *Редагування тесту #{test_id}*\n\n"
+        "Оберіть, що хочете змінити:",
+        reply_markup=edit_test_menu_keyboard(test_id),
+        parse_mode="Markdown",
+    )
+    await state.set_state(TeacherStates.editing_test)
+
+
+@router.callback_query(TeacherStates.editing_test, EditTestCallback.filter(F.action == "points"))
+async def edit_test_max_points_prompt(callback: CallbackQuery, callback_data: EditTestCallback, state: FSMContext) -> None:
+    """Ask for the test grading scale (max points)."""
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+    test = await queries.get_test(callback_data.id)
+    current = test.get("max_points")
+    current_label = queries.format_points_value(current) if current is not None else "—"
+    await callback.message.edit_text(
+        i18n("max_points_edit_prompt", lang, current=current_label),
+        reply_markup=back_keyboard("edit_menu"),
+        parse_mode="Markdown",
+    )
+    await state.update_data(editing_test_id=callback_data.id)
+    await state.set_state(TeacherStates.editing_test_max_points)
+    await callback.answer()
+
+
+@router.message(TeacherStates.editing_test_max_points, F.text)
+async def edit_test_max_points_save(message: Message, state: FSMContext) -> None:
+    """Save new max points for the test."""
+    user = await queries.get_user(message.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+    points = _parse_max_points(message.text)
+    if points is None:
+        await message.answer(i18n("max_points_invalid", lang))
+        return
+
+    data = await state.get_data()
+    test_id = data["editing_test_id"]
+    await queries.update_test(test_id, max_points=float(points))
+    await message.answer(
+        i18n("max_points_updated", lang, points=points),
+        parse_mode="Markdown",
+    )
     await message.answer(
         f"✏️ *Редагування тесту #{test_id}*\n\n"
         "Оберіть, що хочете змінити:",

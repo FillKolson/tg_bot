@@ -25,6 +25,7 @@ class TeacherStates(StatesGroup):
     choosing_limited_attempts = State()
     choosing_visibility = State()
     choosing_time_limit = State()
+    choosing_max_points = State()
 
     # Adding questions
     entering_question_text = State()
@@ -45,6 +46,7 @@ class TeacherStates(StatesGroup):
     editing_test_attempts = State()
     editing_test_limited_attempts = State()
     editing_test_time_limit = State()
+    editing_test_max_points = State()
     editing_questions_menu = State()    # viewing list of questions
     selecting_question_to_edit = State()
     editing_question_text = State()

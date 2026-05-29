@@ -13,10 +13,15 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardButton, InlineKe
 from db import queries
 from db.queries import QuestionType
 from config.i18n import i18n
-from keyboards.callbacks import SubjectCallback, TestCallback, BackCallback, SearchCallback, TeacherFilterCallback
+from keyboards.callbacks import (
+    SubjectCallback, TestCallback, BackCallback, SearchCallback, TeacherFilterCallback,
+    StudentResultsCallback,
+)
 from keyboards.keyboards import (
     student_menu, subjects_keyboard, tests_keyboard,
     answer_keyboard, start_test_keyboard, search_menu_keyboard, teachers_list_keyboard,
+    student_results_subjects_keyboard,
+    student_results_subject_view_keyboard, student_results_test_back_keyboard,
 )
 from states.states import StudentStates
 
@@ -63,11 +68,8 @@ async def _expiry_watcher(session_id: int, expires_iso: str, chat_id: int, bot) 
         if session.get("completed_at"):
             return
 
-        # Compute current score and finalize
-        score = await queries.get_session_score(session_id)
         total = session.get("total_questions") or 0
-        pct = round(score / total * 100) if total > 0 else 0
-        await queries.complete_session(session_id, score, pct)
+        await queries.complete_session_from_answers(session_id, total)
 
         # Notify student
         user = await queries.get_user(session.get("student_id"))
@@ -84,6 +86,39 @@ def _attempts_label(max_attempts: int, lang: str) -> str:
     if lang == "en":
         return "1 attempt" if max_attempts == 1 else f"{max_attempts} attempts"
     return "1 спроба" if max_attempts == 1 else f"{max_attempts} спроб"
+
+
+def _format_result_points(earned: float, total: float) -> str:
+    earned_s = queries.format_points_value(earned)
+    total_s = queries.format_points_value(total)
+    return f"*{earned_s} / {total_s}*"
+
+
+async def _finish_test(message: Message, state: FSMContext, lang: str) -> None:
+    """Complete session and send final result (supports fractional points)."""
+    data = await state.get_data()
+    session_id = data["session_id"]
+    total = len(data["questions"])
+    earned, scale, pct = await queries.complete_session_from_answers(session_id, total)
+    await state.clear()
+
+    bar = _progress_bar(pct)
+    grade = _grade_i18n(pct, lang)
+    title = data.get("test_title", "Тест")
+    subject_name = data.get("subject_name", "—")
+    result_line = _format_result_points(earned, scale)
+
+    await message.answer(
+        f"🏁 *Тест завершено!*\n\n"
+        f"📝 *{title}*\n"
+        f"📖 Предмет: {subject_name}\n"
+        f"📊 Результат: {result_line} ({pct}%)\n"
+        f"{bar}\n"
+        f"{grade}\n\n"
+        "📌 Перегляньте історію у меню *📈 Мої результати*.",
+        reply_markup=student_menu(lang),
+        parse_mode="Markdown",
+    )
 
 
 def _grade_i18n(pct: int, lang: str) -> str:
@@ -301,7 +336,16 @@ async def start_test(callback: CallbackQuery, callback_data: TestCallback, state
         except Exception:
             expires_at = None
 
-    session = await queries.create_session(test["id"], user["id"], len(test["questions"]), expires_at=expires_at)
+    question_count = len(test["questions"])
+    max_pts = float(test["max_points"]) if test.get("max_points") is not None else float(question_count)
+
+    session = await queries.create_session(
+        test["id"],
+        user["id"],
+        question_count,
+        expires_at=expires_at,
+        max_points=max_pts,
+    )
 
     # Start background watcher to auto-complete and notify when time expires
     if expires_at:
@@ -402,10 +446,8 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext) -> None:
             now = datetime.now(timezone.utc)
             if now >= exp_dt:
                 # finalize session as expired
-                score_so_far = data.get("score", 0)
                 total_q = len(questions)
-                pct = round(score_so_far / total_q * 100) if total_q > 0 else 0
-                await queries.complete_session(data["session_id"], score_so_far, pct)
+                await queries.complete_session_from_answers(data["session_id"], total_q)
                 await state.clear()
                 await callback.message.answer(i18n("time_up", lang), reply_markup=student_menu(lang))
                 await callback.answer()
@@ -447,26 +489,7 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext) -> None:
     total = len(questions)
 
     if next_idx >= total:
-        # Test finished
-        pct = round(score / total * 100)
-        await queries.complete_session(data["session_id"], score, pct)
-        await state.clear()
-        bar = _progress_bar(pct)
-        grade = _grade_i18n(pct, lang)
-        title = data.get("test_title", "Тест")
-        subject_name = data.get("subject_name", "—")
-
-        await callback.message.answer(
-            f"🏁 *Тест завершено!*\n\n"
-            f"📝 *{title}*\n"
-            f"📖 Предмет: {subject_name}\n"
-            f"📊 Результат: *{score} / {total}* ({pct}%)\n"
-            f"{bar}\n"
-            f"{grade}\n\n"
-            "📌 Перегляньте історію у меню *📈 Мої результати*.",
-            reply_markup=student_menu(lang),
-            parse_mode="Markdown",
-        )
+        await _finish_test(callback.message, state, lang)
     else:
         await state.update_data(current_index=next_idx, score=score)
         await _send_question(callback.message, state)
@@ -507,10 +530,8 @@ async def handle_multiple_answer_confirm(callback: CallbackQuery, state: FSMCont
             now = datetime.now(timezone.utc)
             if now >= exp_dt:
                 # finalize session as expired
-                score_so_far = data.get("score", 0)
                 total_q = len(questions)
-                pct = round(score_so_far / total_q * 100) if total_q > 0 else 0
-                await queries.complete_session(data["session_id"], score_so_far, pct)
+                await queries.complete_session_from_answers(data["session_id"], total_q)
                 await state.clear()
                 await callback.message.answer(i18n("time_up", lang), reply_markup=student_menu(lang))
                 await callback.answer()
@@ -521,9 +542,7 @@ async def handle_multiple_answer_confirm(callback: CallbackQuery, state: FSMCont
     # Save multiple answers
     await queries.save_multiple_answers(data["session_id"], question_id, selected_option_ids)
 
-    # Calculate partial credit
     question_score = await queries.get_question_score(data["session_id"], question_id)
-    score = data["score"] + question_score
 
     # Get correct options for feedback
     correct_opts = [o for o in q["options"] if o.get("is_correct")]
@@ -544,34 +563,14 @@ async def handle_multiple_answer_confirm(callback: CallbackQuery, state: FSMCont
     await callback.message.edit_reply_markup()
     await callback.message.answer(feedback, parse_mode="Markdown")
 
-    # Clear selected options
-    await state.update_data(selected_option_ids=[], current_index=idx + 1, score=score)
-
     next_idx = idx + 1
     total = len(questions)
 
     if next_idx >= total:
-        # Test finished
-        pct = round(score / total * 100)
-        await queries.complete_session(data["session_id"], score, pct)
-        await state.clear()
-        bar = _progress_bar(pct)
-        grade = _grade_i18n(pct, lang)
-        title = data.get("test_title", "Тест")
-        subject_name = data.get("subject_name", "—")
-
-        await callback.message.answer(
-            f"🏁 *Тест завершено!*\n\n"
-            f"📝 *{title}*\n"
-            f"📖 Предмет: {subject_name}\n"
-            f"📊 Результат: *{score} / {total}* ({pct}%)\n"
-            f"{bar}\n"
-            f"{grade}\n\n"
-            "📌 Перегляньте історію у меню *📈 Мої результати*.",
-            reply_markup=student_menu(lang),
-            parse_mode="Markdown",
-        )
+        await state.update_data(selected_option_ids=[])
+        await _finish_test(callback.message, state, lang)
     else:
+        await state.update_data(selected_option_ids=[], current_index=next_idx)
         await _send_question(callback.message, state)
 
     await callback.answer()
@@ -579,7 +578,14 @@ async def handle_multiple_answer_confirm(callback: CallbackQuery, state: FSMCont
 
 # My results
 
-@router.message(F.text.in_(["📈 Мої результати", "📈 My Results", "Мої результати", "My Results"]))
+RESULTS_MAX_LINES = 15
+
+
+@router.message(F.text.in_([
+    i18n("menu_my_results", "uk"),
+    i18n("menu_my_results", "en"),
+    "Мої результати", "My Results",
+]))
 async def my_results(message: Message, state: FSMContext) -> None:
     user = await _require_student(message)
     if not user:
@@ -588,13 +594,85 @@ async def my_results(message: Message, state: FSMContext) -> None:
     await state.clear()
 
     sessions = await queries.get_student_sessions(user["id"], message.from_user.id)
-
     if not sessions:
         await message.answer(i18n("no_results_student", lang))
         return
 
-    text = _student_results_summary(sessions)
-    await message.answer(text, parse_mode="Markdown")
+    subjects = _student_subject_stats(sessions)
+    text, reply_markup = _student_results_reply(subjects, sessions, lang)
+
+    await message.answer(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await state.set_state(StudentStates.viewing_my_results)
+    await state.update_data(my_results_sessions=sessions)
+
+
+@router.callback_query(StudentStates.viewing_my_results, StudentResultsCallback.filter())
+async def my_results_callback(
+    callback: CallbackQuery, callback_data: StudentResultsCallback, state: FSMContext,
+) -> None:
+    user = await _require_student(callback)
+    if not user:
+        return
+    lang = user.get("language", "uk")
+
+    data = await state.get_data()
+    sessions = data.get("my_results_sessions")
+    if not sessions:
+        sessions = await queries.get_student_sessions(user["id"], callback.from_user.id)
+        await state.update_data(my_results_sessions=sessions)
+
+    if not sessions:
+        await callback.message.edit_text(i18n("no_results_student", lang))
+        await state.clear()
+        await callback.answer()
+        return
+
+    subjects = _student_subject_stats(sessions)
+    single_subject = len(subjects) == 1
+
+    if callback_data.action == "test" and callback_data.id:
+        subject_id = callback_data.sub
+        if subject_id:
+            scope = _sessions_for_subject(sessions, subject_id)
+        else:
+            scope = sessions
+        test_sessions = [s for s in scope if s.get("test_id") == callback_data.id]
+        if not test_sessions:
+            await callback.answer("⚠️ Тест не знайдено.", show_alert=True)
+            return
+        if not subject_id:
+            test = test_sessions[0].get("tests") or {}
+            subject_id = test.get("subject_id") or (test.get("subjects") or {}).get("id", 0)
+        title = (test_sessions[0].get("tests") or {}).get("title", "—")
+        await callback.message.edit_text(
+            _format_student_test_detail(title, test_sessions, lang),
+            reply_markup=student_results_test_back_keyboard(
+                subject_id, lang, single_subject=single_subject,
+            ),
+            parse_mode="Markdown",
+        )
+        await callback.answer()
+        return
+
+    if callback_data.action == "subject" and callback_data.id:
+        text, keyboard = _student_subject_reply(
+            subjects, sessions, callback_data.id, lang,
+            show_overview_back=not single_subject,
+        )
+        if not text:
+            await callback.answer("⚠️ Предмет не знайдено.", show_alert=True)
+            return
+        await callback.message.edit_text(
+            text, reply_markup=keyboard, parse_mode="Markdown",
+        )
+        await callback.answer()
+        return
+
+    text, reply_markup = _student_results_reply(subjects, sessions, lang)
+    await callback.message.edit_text(
+        text, reply_markup=reply_markup, parse_mode="Markdown",
+    )
+    await callback.answer()
 
 
 # Helpers
@@ -609,14 +687,6 @@ def _grade(pct: int) -> str:
     return _grade_i18n(pct, "uk")
 
 
-def _grade_short(pct: int) -> str:
-    if pct >= 80:
-        return "✅ Успішно"
-    if pct >= 60:
-        return "⚠️ Добре"
-    return "❌ Потрібно повторити"
-
-
 def _format_date(dt: str | None) -> str:
     if not dt:
         return "—"
@@ -629,42 +699,208 @@ def _format_date(dt: str | None) -> str:
         return dt
 
 
-def _student_results_summary(sessions: list[dict]) -> str:
-    total = len(sessions)
-    avg_pct = round(sum(round(s.get("percentage", 0)) for s in sessions) / total)
-    best = max(sessions, key=lambda s: round(s.get("percentage", 0)))
-    latest = sessions[0]
-    subjects = {
-        s.get("tests", {}).get("subjects", {}).get("name", "—")
-        for s in sessions if s.get("tests")
-    }
-    subject_count = len(subjects)
+def _format_student_attempt_line(session: dict, lang: str, *, show_title: bool = True) -> str:
+    pct = round(session.get("percentage", 0))
+    score = queries.format_points_value(session.get("score", 0))
+    total = queries.format_points_value(queries.session_points_total(session))
+    date = _format_date(session.get("completed_at"))
+    if show_title:
+        return i18n(
+            "results_student_line", lang,
+            title=session.get("tests", {}).get("title", "—"),
+            pct=pct, score=score, total=total, date=date,
+        )
+    return i18n(
+        "results_student_attempt_line", lang,
+        pct=pct, score=score, total=total, date=date,
+    )
 
-    lines = [
-        "📈 *Ваші результати*",
-        f"   • Тестів: {total}",
-        f"   • Середній бал: {avg_pct}%",
-        f"   • Кращий результат: *{best.get('tests', {}).get('title', '—')}* ({round(best.get('percentage', 0))}%)",
-        f"   • Останній тест: *{latest.get('tests', {}).get('title', '—')}* ({round(latest.get('percentage', 0))}%)",
-        f"   • Предметів: {subject_count}",
-        "",
+
+def _best_session(sessions: list[dict]) -> dict:
+    return max(
+        sessions,
+        key=lambda s: (
+            s.get("percentage", 0),
+            s.get("score", 0),
+            s.get("completed_at") or "",
+        ),
+    )
+
+
+def _group_sessions_by_test(sessions: list[dict]) -> list[dict]:
+    """One entry per test with best session and all attempts."""
+    by_test: dict[int, list[dict]] = {}
+    for session in sessions:
+        test_id = session.get("test_id")
+        if test_id is None:
+            continue
+        by_test.setdefault(test_id, []).append(session)
+
+    tests = []
+    for test_id, test_sessions in by_test.items():
+        best = _best_session(test_sessions)
+        title = (best.get("tests") or {}).get("title", "—")
+        tests.append({
+            "test_id": test_id,
+            "title": title,
+            "best_session": best,
+            "best_percentage": best.get("percentage", 0),
+            "attempts": sorted(
+                test_sessions,
+                key=lambda s: s.get("completed_at") or "",
+                reverse=True,
+            ),
+        })
+    return sorted(tests, key=lambda t: t["title"].casefold())
+
+
+def _student_subject_stats(sessions: list[dict]) -> list[dict]:
+    """Group student sessions by subject with average score and counts."""
+    by_subject: dict[int, dict] = {}
+    for session in sessions:
+        test = session.get("tests") or {}
+        subj = test.get("subjects") or {}
+        subject_id = test.get("subject_id") or subj.get("id")
+        if subject_id is None:
+            continue
+        if subject_id not in by_subject:
+            by_subject[subject_id] = {
+                "subject_id": subject_id,
+                "subject_name": subj.get("name", "—"),
+                "sessions": [],
+            }
+        by_subject[subject_id]["sessions"].append(session)
+
+    result = []
+    for item in by_subject.values():
+        subject_sessions = item["sessions"]
+        avg = round(
+            sum(round(s.get("percentage", 0)) for s in subject_sessions) / len(subject_sessions),
+            1,
+        )
+        result.append({
+            "subject_id": item["subject_id"],
+            "subject_name": item["subject_name"],
+            "sessions": subject_sessions,
+            "total_sessions": len(subject_sessions),
+            "test_count": len({s.get("test_id") for s in subject_sessions}),
+            "average_score": avg,
+        })
+    return sorted(result, key=lambda x: x["subject_name"].casefold())
+
+
+def _sessions_for_subject(sessions: list[dict], subject_id: int) -> list[dict]:
+    return [
+        s for s in sessions
+        if ((s.get("tests") or {}).get("subject_id") or (s.get("tests") or {}).get("subjects", {}).get("id"))
+        == subject_id
     ]
 
-    for s in sessions:
-        pct = round(s.get("percentage", 0))
-        bar = _progress_bar(pct, length=8)
-        title = s.get("tests", {}).get("title", "—")
-        subject_name = s.get("tests", {}).get("subjects", {}).get("name", "—")
-        date = _format_date(s.get("completed_at"))
-        status = _grade_short(pct)
-        lines.extend([
-            f"*{title}* [{subject_name}]",
-            f"   {bar} {pct}% ({s.get('score', 0)}/{s.get('total_questions', 0)})",
-            f"   {date} · {status}",
-            "",
-        ])
 
+def _format_student_results_overview(
+    sessions: list[dict], subjects: list[dict], lang: str,
+) -> str:
+    total = len(sessions)
+    avg_pct = round(sum(round(s.get("percentage", 0)) for s in sessions) / total)
+    lines = [
+        i18n("results_student_title", lang),
+        i18n(
+            "results_student_overview", lang,
+            bar=_progress_bar(avg_pct),
+            avg=f"{avg_pct}%",
+            count=total,
+            subjects=len(subjects),
+        ),
+    ]
+    if len(subjects) > 1:
+        lines.extend(["", i18n("results_student_pick_subject", lang)])
     return "\n".join(lines)
+
+
+def _format_student_subject_detail(
+    subject: dict, sessions: list[dict], lang: str, *, max_lines: int = RESULTS_MAX_LINES,
+) -> str:
+    tests = _group_sessions_by_test(sessions)
+    avg = int(round(subject["average_score"]))
+    lines = [
+        i18n("results_student_subject_title", lang, name=subject["subject_name"]),
+        i18n(
+            "results_student_subject_result", lang,
+            bar=_progress_bar(avg),
+            avg=f"{subject['average_score']}%",
+            attempts=subject["total_sessions"],
+            tests=subject["test_count"],
+        ),
+        "",
+        i18n("results_student_tests_header", lang),
+    ]
+    for test in tests[:max_lines]:
+        lines.append(_format_student_attempt_line(test["best_session"], lang))
+    if len(tests) > max_lines:
+        lines.append(i18n("results_student_more", lang, count=len(tests) - max_lines))
+    return "\n".join(lines)
+
+
+def _format_student_test_detail(
+    title: str, sessions: list[dict], lang: str, *, max_lines: int = RESULTS_MAX_LINES,
+) -> str:
+    best = _best_session(sessions)
+    lines = [
+        i18n("results_student_test_title", lang, title=title),
+        i18n(
+            "results_student_test_best", lang,
+            pct=round(best.get("percentage", 0)),
+            score=queries.format_points_value(best.get("score", 0)),
+            total=queries.format_points_value(queries.session_points_total(best)),
+        ),
+        "",
+        i18n("results_student_attempts_header", lang),
+    ]
+    sorted_sessions = sorted(
+        sessions, key=lambda s: s.get("completed_at") or "", reverse=True,
+    )
+    for session in sorted_sessions[:max_lines]:
+        lines.append(_format_student_attempt_line(session, lang, show_title=False))
+    if len(sorted_sessions) > max_lines:
+        lines.append(i18n("results_student_more", lang, count=len(sorted_sessions) - max_lines))
+    return "\n".join(lines)
+
+
+def _student_subject_reply(
+    subjects: list[dict],
+    sessions: list[dict],
+    subject_id: int,
+    lang: str,
+    *,
+    show_overview_back: bool,
+) -> tuple[str | None, InlineKeyboardMarkup | None]:
+    subj = next((s for s in subjects if s["subject_id"] == subject_id), None)
+    if not subj:
+        return None, None
+    subject_sessions = _sessions_for_subject(sessions, subject_id)
+    tests = _group_sessions_by_test(subject_sessions)
+    text = _format_student_subject_detail(subj, subject_sessions, lang)
+    show_test_buttons = len(tests) > 0
+    keyboard = student_results_subject_view_keyboard(
+        tests, subject_id, lang,
+        show_test_buttons=show_test_buttons,
+        show_overview_back=show_overview_back,
+    )
+    return text, keyboard
+
+
+def _student_results_reply(
+    subjects: list[dict], sessions: list[dict], lang: str,
+) -> tuple[str, InlineKeyboardMarkup | None]:
+    if len(subjects) == 1:
+        return _student_subject_reply(
+            subjects, sessions, subjects[0]["subject_id"], lang,
+            show_overview_back=False,
+        )
+    return (
+        _format_student_results_overview(sessions, subjects, lang),
+        student_results_subjects_keyboard(subjects),
+    )
 
 
 # Search and filter

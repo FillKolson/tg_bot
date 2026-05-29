@@ -99,6 +99,23 @@ async def create_subject(name: str) -> dict:
     return res.data[0]
 
 
+# Scoring helpers
+
+def session_points_total(session: dict) -> float:
+    """Max points for display (snapshot on session or legacy question count)."""
+    if session.get("max_points") is not None:
+        return float(session["max_points"])
+    return float(session.get("total_questions") or 0)
+
+
+def format_points_value(value: float | int) -> str:
+    """Format a point value for UI (one decimal when needed)."""
+    v = float(value)
+    if v == int(v):
+        return str(int(v))
+    return f"{v:.1f}"
+
+
 # Tests
 
 async def create_test(
@@ -111,6 +128,7 @@ async def create_test(
     show_answer_correctness: bool = True,
     max_attempts: Optional[int] = None,
     time_limit_minutes: Optional[int] = None,
+    max_points: Optional[float] = None,
 ) -> dict:
     """Create new test with given parameters."""
     res = await supabase_admin.table("tests").insert({
@@ -123,6 +141,7 @@ async def create_test(
         "show_answer_correctness": show_answer_correctness,
         "max_attempts": max_attempts,
         "time_limit_minutes": time_limit_minutes,
+        "max_points": max_points,
     }).execute()
     return res.data[0]
 
@@ -243,7 +262,13 @@ async def bulk_insert_questions_options(test_id: int, questions: list[dict]) -> 
 
 # Sessions & Answers
 
-async def create_session(test_id: int, student_id: int, total_questions: int, expires_at: Optional[str] = None) -> dict:
+async def create_session(
+    test_id: int,
+    student_id: int,
+    total_questions: int,
+    expires_at: Optional[str] = None,
+    max_points: Optional[float] = None,
+) -> dict:
     """Create test session (admin insert, bypasses RLS).
     Optionally set an expires_at ISO timestamp for timed tests.
     """
@@ -251,6 +276,7 @@ async def create_session(test_id: int, student_id: int, total_questions: int, ex
         "test_id": test_id,
         "student_id": student_id,
         "total_questions": total_questions,
+        "max_points": max_points,
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
     if expires_at:
@@ -337,7 +363,7 @@ async def get_question_score(session_id: int, question_id: int) -> float:
         return 0.0
 
 
-async def complete_session(session_id: int, score: int, percentage: float) -> None:
+async def complete_session(session_id: int, score: float, percentage: float) -> None:
     """Save final score and percentage, mark as completed."""
     await supabase_admin.table("test_sessions").update({
         "score": score,
@@ -352,38 +378,66 @@ async def get_session(session_id: int) -> Optional[dict]:
     return res.data[0] if res.data else None
 
 
-async def get_session_score(session_id: int) -> int:
-    """Compute the current score (number of correct answers) for a session."""
-    # Get the session to find the test
+async def get_session_score(session_id: int) -> float:
+    """Sum of points per question (0–1 each; multiple choice may be fractional)."""
     session = await get_session(session_id)
     if not session:
-        return 0
+        return 0.0
 
-    # Get all questions in the test
     test_id = session.get("test_id")
-    questions_res = await supabase_admin.table("questions").select("id, question_type").eq("test_id", test_id).execute()
+    questions_res = (
+        await supabase_admin.table("questions")
+        .select("id, question_type")
+        .eq("test_id", test_id)
+        .execute()
+    )
     questions = questions_res.data or []
 
-    total_score = 0
+    total_score = 0.0
     for question in questions:
         question_id = question["id"]
         question_type = question.get("question_type", QuestionType.SINGLE_CHOICE)
 
         if question_type == QuestionType.MULTIPLE_CHOICE:
-            # For multiple choice, use the partial credit scoring
-            score = await get_question_score(session_id, question_id)
-            total_score += score
+            total_score += await get_question_score(session_id, question_id)
         elif question_type == QuestionType.SINGLE_CHOICE:
-            # For single choice, count correct answers
-            answers_res = await supabase_admin.table("session_answers").select("is_correct").eq("session_id", session_id).eq("question_id", question_id).execute()
-            answers = answers_res.data or []
-            if any(a.get("is_correct") for a in answers):
-                total_score += 1
-        else:
-            # Other question types not yet implemented
-            pass
+            answers_res = (
+                await supabase_admin.table("session_answers")
+                .select("is_correct")
+                .eq("session_id", session_id)
+                .eq("question_id", question_id)
+                .execute()
+            )
+            if any(a.get("is_correct") for a in (answers_res.data or [])):
+                total_score += 1.0
+    return round(total_score, 2)
 
-    return int(total_score)
+
+async def complete_session_from_answers(session_id: int, total_questions: int) -> tuple[float, float, int]:
+    """Finalize session; returns (scaled_score, max_points, percentage)."""
+    session = await get_session(session_id)
+    if not session:
+        return 0.0, 0.0, 0
+
+    max_pts = session.get("max_points")
+    if max_pts is None:
+        test_res = (
+            await supabase_admin.table("tests")
+            .select("max_points")
+            .eq("id", session["test_id"])
+            .execute()
+        )
+        test_row = (test_res.data or [None])[0]
+        max_pts = (test_row or {}).get("max_points") if test_row else None
+    scale = float(max_pts) if max_pts is not None else float(total_questions or 0)
+
+    raw_earned = await get_session_score(session_id)
+    ratio = raw_earned / total_questions if total_questions > 0 else 0.0
+    pct = round(ratio * 100) if total_questions > 0 else 0
+    scaled = round(ratio * scale, 1) if scale > 0 else 0.0
+
+    await complete_session(session_id, scaled, pct)
+    return scaled, scale, pct
 
 
 async def get_test_results(test_id: int, telegram_id: int) -> list[dict]:
@@ -405,7 +459,7 @@ async def get_student_sessions(student_id: int, telegram_id: int) -> list[dict]:
     # telegram_id parameter kept for backwards compatibility
     res = (
         await supabase_admin.table("test_sessions")
-        .select("*, tests(title, subjects(name))")
+        .select("*, tests(title, subject_id, subjects(id, name))")
         .eq("student_id", student_id)
         .not_.is_("completed_at", "null")
         .order("completed_at", desc=True)
@@ -450,6 +504,7 @@ async def update_test(
     max_attempts: Optional[int] = None,
     time_limit_minutes: Optional[int] = None,
     set_time_limit: bool = False,
+    max_points: Optional[float] = None,
 ) -> dict:
     """Update test fields (admin operation)."""
     update_data = {}
@@ -467,7 +522,9 @@ async def update_test(
         update_data["max_attempts"] = max_attempts
     if set_time_limit:
         update_data["time_limit_minutes"] = time_limit_minutes
-    
+    if max_points is not None:
+        update_data["max_points"] = max_points
+
     res = await supabase_admin.table("tests").update(update_data).eq("id", test_id).execute()
     return res.data[0] if res.data else {}
 
