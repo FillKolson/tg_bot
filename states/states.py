@@ -29,7 +29,7 @@ class TeacherStates(StatesGroup):
 
     # Adding questions
     entering_question_text = State()
-    choosing_question_type = State()  # single or multiple choice
+    choosing_question_type = State()  # single, multiple, or open answer
     entering_option = State()       # collecting option texts
     marking_correct = State()       # picking correct option via inline btn
     marking_multiple_correct = State()  # picking multiple correct options

@@ -2,7 +2,8 @@
 -- Gets teacher_id dynamically from the first teacher in the database.
 --
 -- Also seeds demo students (telegram_id 900000001–900000008), completed test
--- sessions, and session_answers, plus 30 attempts for telegram_id 6056542025.
+-- sessions, and session_answers (including open_answer with answer_text),
+-- plus 30 attempts for telegram_id 6056542025.
 -- Re-running the student blocks is safe: their sessions are removed first.
 
 -- Insert all sample subjects if they don't exist
@@ -570,7 +571,8 @@ DELETE FROM tests WHERE title IN (
     'Клітина (приватний)',
     'Реакції та розчини',
     'Механіка: базовий курс',
-    'Електрика експрес'
+    'Електрика експрес',
+    'Географія: відкриті відповіді'
 );
 
 -- Географія: 2 питання × 2 варіанти, 15 хв, 5 спроб, показ відповідей
@@ -1072,6 +1074,27 @@ INSERT INTO options (question_id, text, is_correct) VALUES
 ((SELECT id FROM questions WHERE text = 'Ел: Закон Ома: U = …'), 'I + R', false),
 ((SELECT id FROM questions WHERE text = 'Ел: Закон Ома: U = …'), 'I² × R', false),
 ((SELECT id FROM questions WHERE text = 'Ел: Закон Ома: U = …'), 'R² × I', false);
+
+-- Географія: відкриті відповіді (open_answer), 3 питання, необмежено спроб, показ відповідей
+INSERT INTO tests (title, subject_id, teacher_id, is_public, description, show_answer_correctness, max_attempts, time_limit_minutes, access_code)
+VALUES (
+    'Географія: відкриті відповіді',
+    (SELECT id FROM subjects WHERE name = 'Географія'),
+    (SELECT id FROM users WHERE role = 'teacher' LIMIT 1),
+    true,
+    'Тест з вільними відповідями — автоперевірка за еталонами вчителя.',
+    true, NULL, NULL, NULL
+);
+INSERT INTO questions (test_id, text, question_order, question_type) VALUES
+((SELECT id FROM tests WHERE title = 'Географія: відкриті відповіді'), 'Відкр: Яка столиця України?', 0, 'open_answer'),
+((SELECT id FROM tests WHERE title = 'Географія: відкриті відповіді'), 'Відкр: Найдовша річка України?', 1, 'open_answer'),
+((SELECT id FROM tests WHERE title = 'Географія: відкриті відповіді'), 'Відкр: Яка найвища гора України?', 2, 'open_answer');
+INSERT INTO options (question_id, text, is_correct) VALUES
+((SELECT id FROM questions WHERE text = 'Відкр: Яка столиця України?'), 'Київ', true),
+((SELECT id FROM questions WHERE text = 'Відкр: Яка столиця України?'), 'Kyiv', true),
+((SELECT id FROM questions WHERE text = 'Відкр: Найдовша річка України?'), 'Дніпро', true),
+((SELECT id FROM questions WHERE text = 'Відкр: Найдовша річка України?'), 'Днепр', true),
+((SELECT id FROM questions WHERE text = 'Відкр: Яка найвища гора України?'), 'Говерла', true);
 
 
 -- ============================================================
@@ -2064,6 +2087,66 @@ BEGIN
     INSERT INTO session_answers (session_id, question_id, option_id, is_correct)
     SELECT v_sid, v_qid, o.id, true FROM options o WHERE o.question_id = v_qid AND o.is_correct LIMIT 1;
 END $seed_mc$;
+
+
+-- Open-answer tests: free-text session_answers (option_id NULL)
+DO $seed_open$
+DECLARE
+    v_uid BIGINT;
+    v_sid BIGINT;
+    v_tid BIGINT;
+    v_qid BIGINT;
+BEGIN
+    SELECT id INTO v_tid FROM tests WHERE title = 'Географія: відкриті відповіді' LIMIT 1;
+    IF v_tid IS NULL THEN
+        RETURN;
+    END IF;
+
+    -- Олена — 100% (3/3)
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000001;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 3, 3, 100, NOW() - INTERVAL '2 days', NOW() - INTERVAL '2 days' + INTERVAL '4 minutes')
+    RETURNING id INTO v_sid;
+    SELECT id INTO v_qid FROM questions WHERE test_id = v_tid AND text = 'Відкр: Яка столиця України?';
+    INSERT INTO session_answers (session_id, question_id, answer_text, is_correct)
+    VALUES (v_sid, v_qid, 'Київ', true);
+    SELECT id INTO v_qid FROM questions WHERE test_id = v_tid AND text = 'Відкр: Найдовша річка України?';
+    INSERT INTO session_answers (session_id, question_id, answer_text, is_correct)
+    VALUES (v_sid, v_qid, 'Дніпро', true);
+    SELECT id INTO v_qid FROM questions WHERE test_id = v_tid AND text = 'Відкр: Яка найвища гора України?';
+    INSERT INTO session_answers (session_id, question_id, answer_text, is_correct)
+    VALUES (v_sid, v_qid, 'Говерла', true);
+
+    -- Іван — 67% (2/3): помилка на горі
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000002;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 2, 3, 67, NOW() - INTERVAL '1 day', NOW() - INTERVAL '1 day' + INTERVAL '5 minutes')
+    RETURNING id INTO v_sid;
+    SELECT id INTO v_qid FROM questions WHERE test_id = v_tid AND text = 'Відкр: Яка столиця України?';
+    INSERT INTO session_answers (session_id, question_id, answer_text, is_correct)
+    VALUES (v_sid, v_qid, 'Kyiv', true);
+    SELECT id INTO v_qid FROM questions WHERE test_id = v_tid AND text = 'Відкр: Найдовша річка України?';
+    INSERT INTO session_answers (session_id, question_id, answer_text, is_correct)
+    VALUES (v_sid, v_qid, 'Днепр', true);
+    SELECT id INTO v_qid FROM questions WHERE test_id = v_tid AND text = 'Відкр: Яка найвища гора України?';
+    INSERT INTO session_answers (session_id, question_id, answer_text, is_correct)
+    VALUES (v_sid, v_qid, 'Петрос', false);
+
+    -- Катерина — 33% (1/3)
+    SELECT id INTO v_uid FROM users WHERE telegram_id = 900000007;
+    INSERT INTO test_sessions (test_id, student_id, score, total_questions, percentage, started_at, completed_at)
+    VALUES (v_tid, v_uid, 1, 3, 33, NOW() - INTERVAL '3 days', NOW() - INTERVAL '3 days' + INTERVAL '6 minutes')
+    RETURNING id INTO v_sid;
+    SELECT id INTO v_qid FROM questions WHERE test_id = v_tid AND text = 'Відкр: Яка столиця України?';
+    INSERT INTO session_answers (session_id, question_id, answer_text, is_correct)
+    VALUES (v_sid, v_qid, 'Київ', true);
+    SELECT id INTO v_qid FROM questions WHERE test_id = v_tid AND text = 'Відкр: Найдовша річка України?';
+    INSERT INTO session_answers (session_id, question_id, answer_text, is_correct)
+    VALUES (v_sid, v_qid, 'Дністер', false);
+    SELECT id INTO v_qid FROM questions WHERE test_id = v_tid AND text = 'Відкр: Яка найвища гора України?';
+    INSERT INTO session_answers (session_id, question_id, answer_text, is_correct)
+    VALUES (v_sid, v_qid, 'Hoverla', false);
+END $seed_open$;
 
 
 -- ============================================================

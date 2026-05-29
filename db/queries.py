@@ -33,6 +33,22 @@ class QuestionType(str, Enum):
     ORDERING = "ordering"
 
 
+def normalize_answer(text: str) -> str:
+    """Normalize free-text answers for comparison (case-insensitive, collapsed whitespace)."""
+    return " ".join((text or "").strip().casefold().split())
+
+
+def matches_open_answer(student_text: str, accepted_options: list[dict]) -> bool:
+    """True if student text matches any accepted reference answer (is_correct options)."""
+    norm = normalize_answer(student_text)
+    if not norm:
+        return False
+    for opt in accepted_options:
+        if opt.get("is_correct") and normalize_answer(opt.get("text", "")) == norm:
+            return True
+    return False
+
+
 def init(admin_client: AsyncClient, jwt_secret_key: str, supabase_url_str: str) -> None:
     """Set up the admin client for database operations."""
     global supabase_admin, jwt_secret, supabase_url
@@ -47,6 +63,12 @@ def init(admin_client: AsyncClient, jwt_secret_key: str, supabase_url_str: str) 
 async def get_user(telegram_id: int) -> Optional[dict]:
     """Fetch user by telegram ID."""
     res = await supabase_admin.table("users").select("*").eq("telegram_id", telegram_id).execute()
+    return res.data[0] if res.data else None
+
+
+async def get_user_by_id(user_id: int) -> Optional[dict]:
+    """Fetch user by database primary key (users.id)."""
+    res = await supabase_admin.table("users").select("*").eq("id", user_id).execute()
     return res.data[0] if res.data else None
 
 
@@ -298,6 +320,18 @@ async def save_answer(
     }).execute()
 
 
+async def save_open_answer(
+    session_id: int, question_id: int, answer_text: str, is_correct: bool
+) -> None:
+    """Save free-text answer for an open-ended question."""
+    await supabase_admin.table("session_answers").insert({
+        "session_id": session_id,
+        "question_id": question_id,
+        "answer_text": answer_text.strip(),
+        "is_correct": is_correct,
+    }).execute()
+
+
 async def save_multiple_answers(
     session_id: int, question_id: int, option_ids: list[int]
 ) -> None:
@@ -316,9 +350,8 @@ async def save_multiple_answers(
 async def get_question_score(session_id: int, question_id: int) -> float:
     """
     Calculate score for a question (0-1).
-    For single choice: 1 if correct, 0 if wrong.
+    For single choice / open answer: 1 if correct, 0 if wrong.
     For multiple choice: partial credit based on correct/incorrect selections.
-    For other types: returns 0.0 (to be implemented)
     """
     # Get all answers for this question in this session
     answers_res = await supabase_admin.table("session_answers").select("*").eq("session_id", session_id).eq("question_id", question_id).execute()
@@ -331,8 +364,7 @@ async def get_question_score(session_id: int, question_id: int) -> float:
 
     question_type = question.get("question_type", QuestionType.SINGLE_CHOICE)
 
-    if question_type == QuestionType.SINGLE_CHOICE:
-        # Single choice: 1 if at least one correct answer, 0 otherwise
+    if question_type in (QuestionType.SINGLE_CHOICE, QuestionType.OPEN_ANSWER):
         for answer in answers:
             if answer.get("is_correct"):
                 return 1.0
@@ -400,7 +432,7 @@ async def get_session_score(session_id: int) -> float:
 
         if question_type == QuestionType.MULTIPLE_CHOICE:
             total_score += await get_question_score(session_id, question_id)
-        elif question_type == QuestionType.SINGLE_CHOICE:
+        elif question_type in (QuestionType.SINGLE_CHOICE, QuestionType.OPEN_ANSWER):
             answers_res = (
                 await supabase_admin.table("session_answers")
                 .select("is_correct")

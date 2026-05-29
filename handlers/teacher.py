@@ -74,13 +74,19 @@ def _question_summary(data: dict) -> str:
 
 
 def _question_type_keyboard(lang: str = "uk") -> InlineKeyboardMarkup:
-    """Keyboard for choosing question type (single vs multiple choice)."""
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=i18n("question_type_single", lang),
-                             callback_data="qtype:single"),
-        InlineKeyboardButton(text=i18n("question_type_multiple", lang),
-                             callback_data="qtype:multiple"),
-    ]])
+    """Keyboard for choosing question type."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=i18n("question_type_single", lang),
+                                 callback_data="qtype:single"),
+            InlineKeyboardButton(text=i18n("question_type_multiple", lang),
+                                 callback_data="qtype:multiple"),
+        ],
+        [
+            InlineKeyboardButton(text=i18n("question_type_open", lang),
+                                 callback_data="qtype:open"),
+        ],
+    ])
 
 
 def _multiple_correct_keyboard(
@@ -104,6 +110,75 @@ def _multiple_correct_keyboard(
 
 def _is_multiple_choice(question_type) -> bool:
     return question_type in (QuestionType.MULTIPLE_CHOICE, QuestionType.MULTIPLE_CHOICE.value)
+
+
+def _is_open_answer(question_type) -> bool:
+    return question_type in (QuestionType.OPEN_ANSWER, QuestionType.OPEN_ANSWER.value)
+
+
+def _accepted_answers_list(opts: list[str], lang: str) -> str:
+    body = "\n".join(f"  {i + 1}. {o}" for i, o in enumerate(opts))
+    return i18n("accepted_answers_list", lang, options=body)
+
+
+def _edit_options_title(question: dict, lang: str) -> str:
+    if _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE)):
+        return f"📝 *Еталонні відповіді*\n\n{question['text']}"
+    return f"📝 *Варіанти для питання*\n\n{question['text']}"
+
+
+async def _options_edit_screen(question_id: int, lang: str) -> tuple[str, InlineKeyboardMarkup]:
+    """Build options/reference-answers edit message and keyboard."""
+    question = await queries.get_question(question_id)
+    if not question:
+        return "", InlineKeyboardMarkup(inline_keyboard=[])
+    options = await queries.get_options_by_question(question_id)
+    question_type = question.get("question_type", QuestionType.SINGLE_CHOICE)
+    open_q = _is_open_answer(question_type)
+    hint = ""
+    if _is_multiple_choice(question_type):
+        hint = "\n\n_" + i18n("mark_multiple_correct", lang) + "_"
+    text = _edit_options_title(question, lang) + hint
+    keyboard = edit_options_list_keyboard(
+        question_id,
+        options,
+        open_answer=open_q,
+        can_add=open_q and len(options) < MAX_OPTIONS,
+        lang=lang,
+    )
+    return text, keyboard
+
+
+def _option_text_edit_prompt(option_text: str, lang: str, *, open_answer: bool, adding: bool) -> str:
+    if open_answer:
+        if adding:
+            return i18n("open_answer_add_during_edit", lang)
+        return i18n("open_answer_edit_during_edit", lang, text=option_text)
+    return (
+        f"✏️ Поточний текст варіанту:\n\n{option_text}\n\n"
+        "Надішліть новий текст варіанту:"
+    )
+
+
+async def _finalize_open_question(
+    message_or_cq, state: FSMContext, cq: dict, opts: list[str], lang: str,
+) -> None:
+    """Save open-answer question with all reference answers marked correct."""
+    option_dicts = [{"text": text, "is_correct": True} for text in opts]
+    cq["options"] = option_dicts
+    data = await state.get_data()
+    questions: list = data.get("questions", [])
+    questions.append(cq)
+    await state.update_data(questions=questions, current_question=None)
+    correct_texts = ", ".join(opts)
+    q_num = len(questions)
+    text = i18n("question_saved_open", lang, num=q_num, correct=correct_texts)
+    markup = question_next_keyboard(lang)
+    if isinstance(message_or_cq, CallbackQuery):
+        await message_or_cq.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
+        await message_or_cq.answer(i18n("saved_notification", lang))
+    else:
+        await message_or_cq.answer(text, reply_markup=markup, parse_mode="Markdown")
 
 
 STATS_MAX_LINES = 20
@@ -506,6 +581,8 @@ async def choose_question_type(callback: CallbackQuery, state: FSMContext) -> No
         question_type = QuestionType.SINGLE_CHOICE
     elif qtype == "multiple":
         question_type = QuestionType.MULTIPLE_CHOICE
+    elif qtype == "open":
+        question_type = QuestionType.OPEN_ANSWER
     else:
         question_type = QuestionType.SINGLE_CHOICE
 
@@ -514,9 +591,17 @@ async def choose_question_type(callback: CallbackQuery, state: FSMContext) -> No
     cq["question_type"] = question_type
     await state.update_data(current_question=cq)
 
-    type_text = i18n("question_type_multiple_selected", lang) if question_type == QuestionType.MULTIPLE_CHOICE else i18n("question_type_single_selected", lang)
+    if question_type == QuestionType.MULTIPLE_CHOICE:
+        type_text = i18n("question_type_multiple_selected", lang)
+        next_prompt = i18n("option_prompt", lang, num=1)
+    elif question_type == QuestionType.OPEN_ANSWER:
+        type_text = i18n("question_type_open_selected", lang)
+        next_prompt = i18n("open_answer_prompt", lang, num=1)
+    else:
+        type_text = i18n("question_type_single_selected", lang)
+        next_prompt = i18n("option_prompt", lang, num=1)
     await callback.message.edit_text(
-        type_text + "\n\n" + i18n("option_prompt", lang, num=1, max=MAX_OPTIONS),
+        type_text + "\n\n" + next_prompt,
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.entering_option)
@@ -543,9 +628,12 @@ async def enter_option(message: Message, state: FSMContext) -> None:
     await state.update_data(current_question=cq)
 
     n = len(opts)
+    question_type = cq.get("question_type", QuestionType.SINGLE_CHOICE)
 
     if n >= MAX_OPTIONS:
-        question_type = cq.get("question_type", QuestionType.SINGLE_CHOICE)
+        if _is_open_answer(question_type):
+            await _finalize_open_question(message, state, cq, opts, lang)
+            return
         options_body = _options_list(opts).replace("📋 Варіанти:\n", "").replace("📋 Options:\n", "")
         if _is_multiple_choice(question_type):
             await state.update_data(selected_correct_indices=[])
@@ -567,10 +655,14 @@ async def enter_option(message: Message, state: FSMContext) -> None:
             )
             await state.set_state(TeacherStates.marking_correct)
     else:
+        if _is_open_answer(question_type):
+            prompt = i18n("open_answer_prompt_or_done", lang, num=n + 1)
+            body = _accepted_answers_list(opts, lang)
+        else:
+            prompt = i18n("option_prompt_or_done", lang, num=n + 1)
+            body = _options_list(opts)
         await message.answer(
-            _options_list(opts)
-            + "\n\n"
-            + i18n("option_prompt_or_done", lang, num=n + 1),
+            body + "\n\n" + prompt,
             reply_markup=options_input_keyboard(opts, lang),
             parse_mode="Markdown",
         )
@@ -584,8 +676,14 @@ async def done_options(callback: CallbackQuery, state: FSMContext) -> None:
     cq = data["current_question"]
     opts = cq["options"]
     question_type = cq.get("question_type", QuestionType.SINGLE_CHOICE)
-    if len(opts) < 2:
-        await callback.answer(i18n("min_options", lang), show_alert=True)
+    min_count = 1 if _is_open_answer(question_type) else 2
+    if len(opts) < min_count:
+        key = "min_accepted_answers" if _is_open_answer(question_type) else "min_options"
+        await callback.answer(i18n(key, lang), show_alert=True)
+        return
+
+    if _is_open_answer(question_type):
+        await _finalize_open_question(callback, state, cq, opts, lang)
         return
 
     if _is_multiple_choice(question_type):
@@ -1526,9 +1624,12 @@ async def edit_question_prompt(callback: CallbackQuery, callback_data: EditQuest
         return
 
     await state.update_data(editing_question_id=callback_data.id)
+    open_q = _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE))
     await callback.message.edit_text(
         f"❓ *Редагування питання*\n\n{question['text']}",
-        reply_markup=question_edit_menu_keyboard(callback_data.id, question['text']),
+        reply_markup=question_edit_menu_keyboard(
+            callback_data.id, question['text'], open_answer=open_q,
+        ),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.selecting_question_to_edit)
@@ -1570,18 +1671,45 @@ async def edit_question_options_prompt(callback: CallbackQuery, callback_data: E
 
     user = await queries.get_user(callback.from_user.id)
     lang = user.get("language", "uk") if user else "uk"
-    options = await queries.get_options_by_question(callback_data.id)
-    question_type = question.get("question_type", QuestionType.SINGLE_CHOICE)
-    await state.update_data(editing_question_id=callback_data.id)
-    hint = ""
-    if _is_multiple_choice(question_type):
-        hint = "\n\n_" + i18n("mark_multiple_correct", lang) + "_"
+    await state.update_data(editing_question_id=callback_data.id, adding_new_option=False)
+    text, keyboard = await _options_edit_screen(callback_data.id, lang)
     await callback.message.edit_text(
-        f"📝 *Варіанти для питання*\n\n{question['text']}{hint}",
-        reply_markup=edit_options_list_keyboard(callback_data.id, options),
+        text,
+        reply_markup=keyboard,
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.editing_question_options)
+    await callback.answer()
+
+
+@router.callback_query(TeacherStates.editing_question_options, EditQuestionCallback.filter(F.action == "add_answer"))
+async def add_accepted_answer_prompt(callback: CallbackQuery, callback_data: EditQuestionCallback, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+    question = await queries.get_question(callback_data.id)
+    if not question or not _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE)):
+        await callback.answer("❌ Питання не знайдено.", show_alert=True)
+        return
+
+    options = await queries.get_options_by_question(callback_data.id)
+    if len(options) >= MAX_OPTIONS:
+        await callback.answer(
+            i18n("open_answer_max_reached", lang, max=MAX_OPTIONS),
+            show_alert=True,
+        )
+        return
+
+    await state.update_data(
+        editing_question_id=callback_data.id,
+        adding_new_option=True,
+        editing_option_id=None,
+    )
+    await callback.message.edit_text(
+        _option_text_edit_prompt("", lang, open_answer=True, adding=True),
+        reply_markup=back_keyboard("options"),
+        parse_mode="Markdown",
+    )
+    await state.set_state(TeacherStates.editing_question_option_index)
     await callback.answer()
 
 
@@ -1600,11 +1728,14 @@ async def edit_question_text_save(message: Message, state: FSMContext) -> None:
 
     await queries.update_question(question_id, text=new_text)
     question = await queries.get_question(question_id)
+    open_q = _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE))
 
     await message.answer("✅ Текст питання оновлено.")
     await message.answer(
         f"❓ *Редагування питання*\n\n{question['text']}",
-        reply_markup=question_edit_menu_keyboard(question_id, question['text']),
+        reply_markup=question_edit_menu_keyboard(
+            question_id, question['text'], open_answer=open_q,
+        ),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.selecting_question_to_edit)
@@ -1612,16 +1743,24 @@ async def edit_question_text_save(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(TeacherStates.editing_question_options, EditOptionCallback.filter(F.action == "edit"))
 async def edit_option_prompt(callback: CallbackQuery, callback_data: EditOptionCallback, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     option = await queries.get_option(callback_data.id)
     if not option:
         await callback.answer("❌ Вариант не знайдено.", show_alert=True)
         return
 
-    await state.update_data(editing_option_id=callback_data.id)
+    data = await state.get_data()
+    question_id = data.get("editing_question_id")
+    question = await queries.get_question(question_id) if question_id else None
+    open_q = _is_open_answer(
+        (question or {}).get("question_type", QuestionType.SINGLE_CHOICE)
+    )
+
+    await state.update_data(editing_option_id=callback_data.id, adding_new_option=False)
     await callback.message.edit_text(
-        f"✏️ Поточний текст варіанту:\n\n{option['text']}\n\n"
-        "Надішліть новий текст варіанту:",
-        reply_markup=back_keyboard("question_edit"),
+        _option_text_edit_prompt(option["text"], lang, open_answer=open_q, adding=False),
+        reply_markup=back_keyboard("options"),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.editing_question_option_index)
@@ -1630,33 +1769,50 @@ async def edit_option_prompt(callback: CallbackQuery, callback_data: EditOptionC
 
 @router.message(TeacherStates.editing_question_option_index, F.text)
 async def edit_option_save(message: Message, state: FSMContext) -> None:
+    user = await queries.get_user(message.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     new_text = message.text.strip()
     if not new_text:
-        await message.answer("⚠️ Текст варіанту не може бути пустим. Спробуйте ще раз:")
+        await message.answer(i18n("option_empty", lang))
         return
 
     data = await state.get_data()
     option_id = data.get("editing_option_id")
     question_id = data.get("editing_question_id")
-    if not option_id or not question_id:
+    adding_new = data.get("adding_new_option", False)
+    if not question_id or (not adding_new and not option_id):
         await message.answer("⚠️ Не знайдено варіант для редагування.")
         return
 
-    option = await queries.get_option(option_id)
-    if not option:
-        await message.answer("⚠️ Вариант не знайдено.")
-        return
-
-    await queries.update_option(option_id, text=new_text, is_correct=option["is_correct"])
     question = await queries.get_question(question_id)
-    options = await queries.get_options_by_question(question_id)
+    if not question:
+        await message.answer("⚠️ Питання не знайдено.")
+        return
+    open_q = _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE))
 
-    await message.answer("✅ Варіант оновлено.")
-    await message.answer(
-        f"📝 *Варіанти для питання*\n\n{question['text']}",
-        reply_markup=edit_options_list_keyboard(question_id, options),
-        parse_mode="Markdown",
-    )
+    if adding_new:
+        if not open_q:
+            await message.answer("⚠️ Помилка додавання варіанту.")
+            return
+        options = await queries.get_options_by_question(question_id)
+        if len(options) >= MAX_OPTIONS:
+            await message.answer(i18n("open_answer_max_reached", lang, max=MAX_OPTIONS))
+            return
+        await queries.add_option(question_id, new_text, is_correct=True)
+        saved_msg = i18n("accepted_answer_added", lang)
+    else:
+        option = await queries.get_option(option_id)
+        if not option:
+            await message.answer("⚠️ Вариант не знайдено.")
+            return
+        is_correct = True if open_q else option["is_correct"]
+        await queries.update_option(option_id, text=new_text, is_correct=is_correct)
+        saved_msg = i18n("accepted_answer_updated", lang) if open_q else "✅ Варіант оновлено."
+
+    await state.update_data(adding_new_option=False)
+    text, keyboard = await _options_edit_screen(question_id, lang)
+    await message.answer(saved_msg)
+    await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
     await state.set_state(TeacherStates.editing_question_options)
 
 
@@ -1670,34 +1826,37 @@ async def delete_question_option(callback: CallbackQuery, callback_data: EditOpt
         await callback.answer("⚠️ Не знайдено питання для редагування.", show_alert=True)
         return
 
+    question = await queries.get_question(question_id)
+    if not question:
+        await callback.answer("⚠️ Помилка видалення.", show_alert=True)
+        return
+    open_q = _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE))
+
     option = await queries.get_option(callback_data.id)
     if not option:
         await callback.answer("⚠️ Помилка видалення.", show_alert=True)
         return
-    if option.get("is_correct"):
+    if not open_q and option.get("is_correct"):
         await callback.answer(i18n("cannot_delete_correct_option", lang), show_alert=True)
         return
 
     options = await queries.get_options_by_question(question_id)
-    if len(options) <= 2:
-        await callback.answer(i18n("min_options", lang), show_alert=True)
+    min_count = 1 if open_q else 2
+    if len(options) <= min_count:
+        key = "min_accepted_answers" if open_q else "min_options"
+        await callback.answer(i18n(key, lang), show_alert=True)
         return
 
     deleted = await queries.delete_option(callback_data.id)
-    if deleted:
-        await callback.answer("✅ Варіант видалено.", show_alert=True)
-    else:
+    if not deleted:
         await callback.answer("⚠️ Помилка видалення.", show_alert=True)
+        return
 
-    question = await queries.get_question(question_id)
-    options = await queries.get_options_by_question(question_id)
-    await callback.message.edit_text(
-        f"📝 *Варіанти для питання*\n\n{question['text']}",
-        reply_markup=edit_options_list_keyboard(question_id, options),
-        parse_mode="Markdown",
-    )
+    text, keyboard = await _options_edit_screen(question_id, lang)
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    deleted_msg = i18n("accepted_answer_deleted", lang) if open_q else "✅ Варіант видалено."
     await state.set_state(TeacherStates.editing_question_options)
-    await callback.answer()
+    await callback.answer(deleted_msg)
 
 
 @router.callback_query(TeacherStates.editing_question_options, EditOptionCallback.filter(F.action == "mark_correct"))
@@ -1716,6 +1875,11 @@ async def mark_question_option_correct(callback: CallbackQuery, callback_data: E
         return
 
     question_type = question.get("question_type", QuestionType.SINGLE_CHOICE)
+    open_q = _is_open_answer(question_type)
+    if open_q:
+        await callback.answer()
+        return
+
     if _is_multiple_choice(question_type):
         option = await queries.get_option(callback_data.id)
         if option and option.get("is_correct"):
@@ -1729,17 +1893,8 @@ async def mark_question_option_correct(callback: CallbackQuery, callback_data: E
             callback_data.id, question_id, QuestionType.SINGLE_CHOICE
         )
 
-    question = await queries.get_question(question_id)
-    options = await queries.get_options_by_question(question_id)
-    hint = ""
-    if _is_multiple_choice(question_type):
-        hint = "\n\n_" + i18n("mark_multiple_correct", lang) + "_"
-
-    await callback.message.edit_text(
-        f"📝 *Варіанти для питання*\n\n{question['text']}{hint}",
-        reply_markup=edit_options_list_keyboard(question_id, options),
-        parse_mode="Markdown",
-    )
+    text, keyboard = await _options_edit_screen(question_id, lang)
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
     await state.set_state(TeacherStates.editing_question_options)
     await callback.answer()
 
@@ -1753,9 +1908,12 @@ async def back_from_edit_question_options(callback: CallbackQuery, state: FSMCon
         await callback.answer("❌ Питання не знайдено.", show_alert=True)
         return
 
+    open_q = _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE))
     await callback.message.edit_text(
         f"❓ *Редагування питання*\n\n{question['text']}",
-        reply_markup=question_edit_menu_keyboard(question_id, question['text']),
+        reply_markup=question_edit_menu_keyboard(
+            question_id, question['text'], open_answer=open_q,
+        ),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.selecting_question_to_edit)
@@ -1771,9 +1929,12 @@ async def back_from_edit_question_text(callback: CallbackQuery, state: FSMContex
         await callback.answer("❌ Питання не знайдено.", show_alert=True)
         return
 
+    open_q = _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE))
     await callback.message.edit_text(
         f"❓ *Редагування питання*\n\n{question['text']}",
-        reply_markup=question_edit_menu_keyboard(question_id, question['text']),
+        reply_markup=question_edit_menu_keyboard(
+            question_id, question['text'], open_answer=open_q,
+        ),
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.selecting_question_to_edit)
@@ -1782,6 +1943,8 @@ async def back_from_edit_question_text(callback: CallbackQuery, state: FSMContex
 
 @router.callback_query(TeacherStates.editing_question_option_index, BackCallback.filter())
 async def back_from_edit_option_text(callback: CallbackQuery, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     data = await state.get_data()
     question_id = data.get("editing_question_id")
     question = await queries.get_question(question_id)
@@ -1789,12 +1952,9 @@ async def back_from_edit_option_text(callback: CallbackQuery, state: FSMContext)
         await callback.answer("❌ Питання не знайдено.", show_alert=True)
         return
 
-    options = await queries.get_options_by_question(question_id)
-    await callback.message.edit_text(
-        f"📝 *Варіанти для питання*\n\n{question['text']}",
-        reply_markup=edit_options_list_keyboard(question_id, options),
-        parse_mode="Markdown",
-    )
+    await state.update_data(adding_new_option=False)
+    text, keyboard = await _options_edit_screen(question_id, lang)
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
     await state.set_state(TeacherStates.editing_question_options)
     await callback.answer()
 

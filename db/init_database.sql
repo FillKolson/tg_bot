@@ -114,11 +114,14 @@ CREATE TABLE test_sessions (
 );
 
 -- Student answers
+-- Open-ended questions: store student free-text answers in session_answers.answer_text.
+-- option_id may be NULL when answer_text is set.
 CREATE TABLE session_answers (
     id          BIGSERIAL PRIMARY KEY,
     session_id  BIGINT REFERENCES test_sessions(id) ON DELETE CASCADE,
     question_id BIGINT REFERENCES questions(id) ON DELETE CASCADE,
     option_id   BIGINT REFERENCES options(id) ON DELETE CASCADE,
+    answer_text TEXT,
     is_correct  BOOLEAN DEFAULT FALSE
 );
 
@@ -302,6 +305,17 @@ CREATE POLICY "session_answers_update_own_session" ON session_answers
             AND test_sessions.student_id = (SELECT id FROM users WHERE telegram_id = (auth.jwt() ->> 'telegram_id')::BIGINT LIMIT 1)
         )
     );
+
+-- ============================================================
+--  OPEN ANSWER — session_answers (idempotent for legacy DBs)
+-- ============================================================
+-- Same as db/migrations/add_answer_text.sql
+
+ALTER TABLE session_answers
+    ALTER COLUMN option_id DROP NOT NULL;
+
+ALTER TABLE session_answers
+    ADD COLUMN IF NOT EXISTS answer_text TEXT;
 
 -- ============================================================
 --  SCORING SCALE (max_points) — backfill for seed / legacy rows

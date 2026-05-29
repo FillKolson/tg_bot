@@ -325,11 +325,18 @@ def edit_questions_list_keyboard(test_id: int, questions: list[dict]) -> InlineK
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def question_edit_menu_keyboard(question_id: int, question_text: str) -> InlineKeyboardMarkup:
+def question_edit_menu_keyboard(
+    question_id: int, question_text: str, *, open_answer: bool = False,
+) -> InlineKeyboardMarkup:
+    options_label = (
+        "📝 Редагувати еталонні відповіді"
+        if open_answer
+        else "📝 Редагувати варіанти відповіді"
+    )
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Редагувати текст питання",
                               callback_data=EditQuestionCallback(id=question_id, action="text").pack())],
-        [InlineKeyboardButton(text="📝 Редагувати варіанти відповіді",
+        [InlineKeyboardButton(text=options_label,
                               callback_data=EditQuestionCallback(id=question_id, action="options").pack())],
         [InlineKeyboardButton(text="🗑 Видалити питання",
                               callback_data=EditQuestionCallback(id=question_id, action="delete").pack())],
@@ -338,25 +345,40 @@ def question_edit_menu_keyboard(question_id: int, question_text: str) -> InlineK
     ])
 
 
-def edit_options_list_keyboard(question_id: int, options: list[dict]) -> InlineKeyboardMarkup:
-    """List of options with edit/delete and mark correct."""
+def edit_options_list_keyboard(
+    question_id: int,
+    options: list[dict],
+    *,
+    open_answer: bool = False,
+    can_add: bool = False,
+    lang: str = "uk",
+) -> InlineKeyboardMarkup:
+    """List of options with edit/delete and mark correct (hidden for open-answer questions)."""
     rows = []
+    if open_answer and can_add:
+        rows.append([InlineKeyboardButton(
+            text=i18n("open_answer_add_button", lang),
+            callback_data=EditQuestionCallback(id=question_id, action="add_answer").pack(),
+        )])
     for opt in options:
-        correct_mark = "✅" if opt["is_correct"] else "⭕"
-        rows.append([
+        correct_mark = "✅ " if open_answer else ("✅" if opt["is_correct"] else "⭕")
+        label = opt["text"][:25] + ("..." if len(opt["text"]) > 25 else "")
+        row = [
             InlineKeyboardButton(
-                text=f"{correct_mark} {opt['text'][:25]}...",
+                text=f"{correct_mark}{label}",
                 callback_data=EditOptionCallback(id=opt["id"], action="edit").pack()
             ),
             InlineKeyboardButton(
                 text="🗑",
                 callback_data=EditOptionCallback(id=opt["id"], action="delete").pack()
             ),
-            InlineKeyboardButton(
+        ]
+        if not open_answer:
+            row.append(InlineKeyboardButton(
                 text="✔️",
                 callback_data=EditOptionCallback(id=opt["id"], action="mark_correct").pack()
-            ),
-        ])
+            ))
+        rows.append(row)
     rows.append([InlineKeyboardButton(text="⬅️ Назад",
                                      callback_data=BackCallback(to="question_edit").pack())])
     return InlineKeyboardMarkup(inline_keyboard=rows)

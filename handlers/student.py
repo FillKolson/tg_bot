@@ -11,7 +11,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, InlineKeyboardButton, InlineKeyboardMarkup
 
 from db import queries
-from db.queries import QuestionType
+from db.queries import QuestionType, matches_open_answer, save_open_answer
 from config.i18n import i18n
 from keyboards.callbacks import (
     SubjectCallback, TestCallback, BackCallback, SearchCallback, TeacherFilterCallback,
@@ -71,8 +71,8 @@ async def _expiry_watcher(session_id: int, expires_iso: str, chat_id: int, bot) 
         total = session.get("total_questions") or 0
         await queries.complete_session_from_answers(session_id, total)
 
-        # Notify student
-        user = await queries.get_user(session.get("student_id"))
+        # Notify student (student_id is users.id, not telegram_id)
+        user = await queries.get_user_by_id(session.get("student_id"))
         lang = user.get("language", "uk") if user else "uk"
         try:
             await bot.send_message(chat_id, i18n("time_up", lang))
@@ -385,10 +385,12 @@ async def _send_question(message: Message, state: FSMContext) -> None:
     total = len(questions)
     question_type = q.get("question_type", QuestionType.SINGLE_CHOICE)
 
-    # Show different keyboard for multiple choice questions
     if question_type == QuestionType.MULTIPLE_CHOICE:
         keyboard = _multiple_answer_keyboard(q["id"], q["options"], [])
         instruction = "\n\n📌 *Оберіть одну або кілька правильних відповідей, потім натисніть «Підтвердити»*"
+    elif question_type == QuestionType.OPEN_ANSWER:
+        keyboard = None
+        instruction = i18n("open_answer_instruction", lang)
     else:
         keyboard = answer_keyboard(q["id"], q["options"])
         instruction = ""
@@ -398,6 +400,67 @@ async def _send_question(message: Message, state: FSMContext) -> None:
         reply_markup=keyboard,
         parse_mode="Markdown",
     )
+
+
+@router.message(StudentStates.taking_test, F.text)
+async def handle_open_answer_text(message: Message, state: FSMContext) -> None:
+    """Free-text answer for open-ended questions."""
+    data = await state.get_data()
+    lang = data.get("lang", "uk")
+    questions = data["questions"]
+    idx = data["current_index"]
+    q = questions[idx]
+    question_type = q.get("question_type", QuestionType.SINGLE_CHOICE)
+
+    if question_type != QuestionType.OPEN_ANSWER:
+        await message.answer(i18n("use_buttons_not_text", lang))
+        return
+
+    answer_text = message.text.strip()
+    if not answer_text:
+        await message.answer(i18n("open_answer_empty", lang))
+        return
+
+    expires_at = data.get("expires_at")
+    if expires_at:
+        try:
+            from datetime import datetime, timezone
+
+            ex = expires_at
+            if ex.endswith("Z"):
+                ex = ex[:-1] + "+00:00"
+            exp_dt = datetime.fromisoformat(ex)
+            if datetime.now(timezone.utc) >= exp_dt:
+                total_q = len(questions)
+                await queries.complete_session_from_answers(data["session_id"], total_q)
+                await state.clear()
+                await message.answer(i18n("time_up", lang), reply_markup=student_menu(lang))
+                return
+        except Exception:
+            pass
+
+    is_correct = matches_open_answer(answer_text, q.get("options", []))
+    await save_open_answer(data["session_id"], q["id"], answer_text, is_correct)
+
+    show_answers = data.get("show_answer_correctness", False)
+    if show_answers:
+        if is_correct:
+            feedback = i18n("correct_answer", lang)
+        else:
+            accepted = [o["text"] for o in q.get("options", []) if o.get("is_correct")]
+            feedback = i18n("wrong_answer_open", lang, correct=", ".join(accepted) or "—")
+    else:
+        feedback = i18n("answer_saved", lang)
+
+    await message.answer(feedback, parse_mode="Markdown")
+
+    next_idx = idx + 1
+    total = len(questions)
+    if next_idx >= total:
+        await _finish_test(message, state, lang)
+    else:
+        await state.update_data(current_index=next_idx)
+        await _send_question(message, state)
 
 
 # Answer question (single choice)
@@ -1028,7 +1091,11 @@ async def show_tests_by_teacher(callback: CallbackQuery, callback_data: TeacherF
     """Show tests for selected teacher."""
     user = await queries.get_user(callback.from_user.id)
     lang = user.get("language", "uk") if user else "uk"
-    teacher = await queries.get_user(callback_data.id)
+    teacher = await queries.get_user_by_id(callback_data.id)
+    if not teacher:
+        await callback.answer("⚠️ Вчителя не знайдено.", show_alert=True)
+        return
+
     tests = await queries.get_tests_by_teacher(callback_data.id)
     
     if not tests:
