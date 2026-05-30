@@ -60,6 +60,5 @@ logs/
 pgdata/
 postgres-data/
 
-# --- Cursor (local) ---
+# --- Others ---
 PROJECT_REQUIREMENTS.md
-requirements.txt
