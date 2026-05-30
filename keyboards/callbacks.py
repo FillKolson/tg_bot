@@ -68,7 +68,7 @@ class EditTestCallback(CallbackData, prefix="editest"):
 
 class EditQuestionCallback(CallbackData, prefix="editq"):
     id: int
-    action: str  # "edit" | "text" | "options" | "delete"
+    action: str  # "edit" | "text" | "options" | "delete" | "add_answer"
 
 
 class EditOptionCallback(CallbackData, prefix="edito"):
@@ -89,7 +89,9 @@ class TeacherFilterCallback(CallbackData, prefix="tfilter"):
 # Statistics
 
 class StatisticsCallback(CallbackData, prefix="stats"):
-    action: str  # "view"
+    action: str  # "view" | "subject" | "test"
+    id: int = 0  # subject_id or test_id depending on action
+    sub: int = 0  # subject_id when action == "test" (for back navigation)
 
 
 # Delete confirmation
@@ -102,3 +104,11 @@ class ConfirmDeleteCallback(CallbackData, prefix="delconf"):
 
 class TeacherTestsSubjectCallback(CallbackData, prefix="tsubj"):
     id: int  # subject_id
+
+
+# Student results
+
+class StudentResultsCallback(CallbackData, prefix="sres"):
+    action: str  # "view" | "subject" | "test"
+    id: int = 0  # subject_id, or test_id when action == "test"
+    sub: int = 0  # subject_id when action == "test" (for back navigation)

@@ -25,11 +25,14 @@ class TeacherStates(StatesGroup):
     choosing_limited_attempts = State()
     choosing_visibility = State()
     choosing_time_limit = State()
+    choosing_max_points = State()
 
     # Adding questions
     entering_question_text = State()
+    choosing_question_type = State()  # single, multiple, or open answer
     entering_option = State()       # collecting option texts
     marking_correct = State()       # picking correct option via inline btn
+    marking_multiple_correct = State()  # picking multiple correct options
 
     # Managing existing tests
     viewing_tests_and_results = State()
@@ -43,6 +46,7 @@ class TeacherStates(StatesGroup):
     editing_test_attempts = State()
     editing_test_limited_attempts = State()
     editing_test_time_limit = State()
+    editing_test_max_points = State()
     editing_questions_menu = State()    # viewing list of questions
     selecting_question_to_edit = State()
     editing_question_text = State()
@@ -62,8 +66,9 @@ class StudentStates(StatesGroup):
     browsing_tests = State()
     entering_access_code = State()
     taking_test = State()
+    selecting_multiple_answers = State()  # for multiple choice questions
     viewing_my_results = State()
-    
+
     # Search and filter
     searching_tests = State()           # main search menu
     searching_by_name = State()         # entering search query

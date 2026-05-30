@@ -1,6 +1,4 @@
--- ============================================================
 --  Telegram Quiz Bot — Complete Database Initialization
--- ============================================================
 
 DROP POLICY IF EXISTS "users_select_own" ON users;
 DROP POLICY IF EXISTS "users_update_own" ON users;
@@ -30,9 +28,7 @@ DROP POLICY IF EXISTS "session_answers_select_own_tests" ON session_answers;
 DROP POLICY IF EXISTS "session_answers_insert_own_session" ON session_answers;
 DROP POLICY IF EXISTS "session_answers_update_own_session" ON session_answers;
 
--- ============================================================
---  DROP TABLES (if they exist)
--- ============================================================
+-- DROP TABLES (if they exist)
 DROP TABLE IF EXISTS session_answers CASCADE;
 DROP TABLE IF EXISTS test_sessions CASCADE;
 DROP TABLE IF EXISTS options CASCADE;
@@ -41,9 +37,7 @@ DROP TABLE IF EXISTS tests CASCADE;
 DROP TABLE IF EXISTS subjects CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 
--- ============================================================
---  CREATE TABLES
--- ============================================================
+-- CREATE TABLES
 
 -- Users (students & teachers)
 CREATE TABLE users (
@@ -75,6 +69,7 @@ CREATE TABLE tests (
     show_answer_correctness  BOOLEAN DEFAULT TRUE,         -- teacher decides if answers are shown
     max_attempts             INTEGER,                      -- NULL = unlimited attempts
     time_limit_minutes       INTEGER,                      -- NULL = no time limit
+    max_points               REAL,                         -- teacher scale: points for 100% correct
     created_at               TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -84,6 +79,7 @@ CREATE TABLE questions (
     test_id        BIGINT REFERENCES tests(id) ON DELETE CASCADE,
     text           TEXT NOT NULL,
     question_order INTEGER NOT NULL DEFAULT 0,
+    question_type  TEXT DEFAULT 'single_choice' CHECK (question_type IN ('single_choice', 'multiple_choice', 'open_answer', 'matching', 'ordering')),
     created_at     TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -96,12 +92,15 @@ CREATE TABLE options (
 );
 
 -- Test sessions (one per student per test attempt)
+-- score: earned points on teacher scale (REAL, typically one decimal)
+-- percentage: 0–100 for rankings/stats; score = ratio(correct) * max_points
 CREATE TABLE test_sessions (
     id              BIGSERIAL PRIMARY KEY,
     test_id         BIGINT REFERENCES tests(id) ON DELETE CASCADE,
     student_id      BIGINT REFERENCES users(id) ON DELETE CASCADE,
-    score           INTEGER DEFAULT 0,
+    score           REAL DEFAULT 0,                          -- scaled points (not raw question count)
     total_questions INTEGER DEFAULT 0,
+    max_points      REAL,                                  -- scale snapshot when attempt started
     percentage      REAL DEFAULT 0,
     started_at      TIMESTAMPTZ DEFAULT NOW(),
     expires_at      TIMESTAMPTZ,
@@ -109,17 +108,18 @@ CREATE TABLE test_sessions (
 );
 
 -- Student answers
+-- Open-ended questions: store student free-text answers in session_answers.answer_text.
+-- option_id may be NULL when answer_text is set.
 CREATE TABLE session_answers (
     id          BIGSERIAL PRIMARY KEY,
     session_id  BIGINT REFERENCES test_sessions(id) ON DELETE CASCADE,
     question_id BIGINT REFERENCES questions(id) ON DELETE CASCADE,
     option_id   BIGINT REFERENCES options(id) ON DELETE CASCADE,
+    answer_text TEXT,
     is_correct  BOOLEAN DEFAULT FALSE
 );
 
--- ============================================================
---  CREATE INDEXES
--- ============================================================
+-- CREATE INDEXES
 CREATE INDEX idx_tests_subject ON tests(subject_id) WHERE is_public = TRUE;
 CREATE INDEX idx_tests_teacher ON tests(teacher_id);
 CREATE INDEX idx_questions_test ON questions(test_id);
@@ -127,9 +127,7 @@ CREATE INDEX idx_options_question ON options(question_id);
 CREATE INDEX idx_sessions_test ON test_sessions(test_id);
 CREATE INDEX idx_sessions_student ON test_sessions(student_id);
 
--- ============================================================
---  ENABLE ROW LEVEL SECURITY (RLS)
--- ============================================================
+-- ENABLE ROW LEVEL SECURITY (RLS)
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE subjects ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tests ENABLE ROW LEVEL SECURITY;
@@ -138,9 +136,7 @@ ALTER TABLE options ENABLE ROW LEVEL SECURITY;
 ALTER TABLE test_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE session_answers ENABLE ROW LEVEL SECURITY;
 
--- ============================================================
---  RLS POLICIES FOR USERS TABLE
--- ============================================================
+-- RLS POLICIES FOR USERS TABLE
 -- Users can only see their own profile
 CREATE POLICY "users_select_own" ON users
     FOR SELECT USING (telegram_id = (auth.jwt() ->> 'telegram_id')::BIGINT);
@@ -153,9 +149,7 @@ CREATE POLICY "users_update_own" ON users
 CREATE POLICY "users_insert_service" ON users
     FOR INSERT WITH CHECK (true);
 
--- ============================================================
 --  RLS POLICIES FOR SUBJECTS TABLE
--- ============================================================
 -- Everyone can read all subjects
 CREATE POLICY "subjects_select_all" ON subjects
     FOR SELECT USING (true);
@@ -164,9 +158,7 @@ CREATE POLICY "subjects_select_all" ON subjects
 CREATE POLICY "subjects_insert_auth" ON subjects
     FOR INSERT WITH CHECK (true);
 
--- ============================================================
 --  RLS POLICIES FOR TESTS TABLE
--- ============================================================
 -- Public tests are visible to everyone
 CREATE POLICY "tests_select_public" ON tests
     FOR SELECT USING (
@@ -190,9 +182,7 @@ CREATE POLICY "tests_delete_own" ON tests
         teacher_id = (SELECT id FROM users WHERE telegram_id = (auth.jwt() ->> 'telegram_id')::BIGINT LIMIT 1)
     );
 
--- ============================================================
 --  RLS POLICIES FOR QUESTIONS TABLE
--- ============================================================
 -- Can read questions if can access the test
 CREATE POLICY "questions_select_if_test_accessible" ON questions
     FOR SELECT USING (
@@ -210,9 +200,7 @@ CREATE POLICY "questions_select_if_test_accessible" ON questions
 CREATE POLICY "questions_insert_own_test" ON questions
     FOR INSERT WITH CHECK (true);
 
--- ============================================================
 --  RLS POLICIES FOR OPTIONS TABLE
--- ============================================================
 -- Can read options if can access the question's test
 CREATE POLICY "options_select_if_accessible" ON options
     FOR SELECT USING (
@@ -231,9 +219,7 @@ CREATE POLICY "options_select_if_accessible" ON options
 CREATE POLICY "options_insert_own_question" ON options
     FOR INSERT WITH CHECK (true);
 
--- ============================================================
 --  RLS POLICIES FOR TEST_SESSIONS TABLE
--- ============================================================
 -- Students can read only their own sessions
 CREATE POLICY "test_sessions_select_own" ON test_sessions
     FOR SELECT USING (
@@ -260,9 +246,7 @@ CREATE POLICY "test_sessions_update_own" ON test_sessions
         student_id = (SELECT id FROM users WHERE telegram_id = (auth.jwt() ->> 'telegram_id')::BIGINT LIMIT 1)
     );
 
--- ============================================================
 --  RLS POLICIES FOR SESSION_ANSWERS TABLE
--- ============================================================
 -- Students can only see answers from their own sessions
 CREATE POLICY "session_answers_select_own" ON session_answers
     FOR SELECT USING (
@@ -297,3 +281,35 @@ CREATE POLICY "session_answers_update_own_session" ON session_answers
             AND test_sessions.student_id = (SELECT id FROM users WHERE telegram_id = (auth.jwt() ->> 'telegram_id')::BIGINT LIMIT 1)
         )
     );
+
+--  OPEN ANSWER — session_answers (idempotent for legacy DBs)
+-- Same as db/migrations/add_answer_text.sql
+
+ALTER TABLE session_answers
+    ALTER COLUMN option_id DROP NOT NULL;
+
+ALTER TABLE session_answers
+    ADD COLUMN IF NOT EXISTS answer_text TEXT;
+
+--  SCORING SCALE (max_points) — backfill for seed / legacy rows
+-- Teacher sets tests.max_points (e.g. 12 for a perfect test). On each attempt the bot
+-- stores test_sessions.max_points as a snapshot and writes test_sessions.score as
+-- round(ratio * max_points, 1), where ratio is the sum of per-question credits (0–1).
+-- If max_points is missing, default to the number of questions (1 point per question).
+-- Re-run after db/seed_sample_tests.sql (seed ends with the same block).
+
+UPDATE tests t
+SET max_points = sub.cnt
+FROM (
+    SELECT test_id, COUNT(*)::REAL AS cnt
+    FROM questions
+    GROUP BY test_id
+) sub
+WHERE t.id = sub.test_id AND t.max_points IS NULL;
+
+UPDATE test_sessions ts
+SET max_points = COALESCE(
+    (SELECT t.max_points FROM tests t WHERE t.id = ts.test_id),
+    ts.total_questions::REAL
+)
+WHERE ts.max_points IS NULL AND ts.completed_at IS NOT NULL;

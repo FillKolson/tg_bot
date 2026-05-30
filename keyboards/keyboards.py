@@ -14,7 +14,7 @@ from .callbacks import (
     AnswerVisibilityCallback, AttemptsCallback, LimitedAttemptsCallback,
     EditTestCallback, EditQuestionCallback, EditOptionCallback,
     SearchCallback, TeacherFilterCallback, StatisticsCallback, ConfirmDeleteCallback,
-    TeacherTestsSubjectCallback, ProfileCallback,
+    TeacherTestsSubjectCallback, ProfileCallback, StudentResultsCallback,
 )
 
 
@@ -297,6 +297,8 @@ def edit_test_menu_keyboard(test_id: int) -> InlineKeyboardMarkup:
                               callback_data=EditTestCallback(id=test_id, action="attempts").pack())],
         [InlineKeyboardButton(text="⏱️ Обмеження часу",
                               callback_data=EditTestCallback(id=test_id, action="time").pack())],
+        [InlineKeyboardButton(text="📊 Шкала балів",
+                              callback_data=EditTestCallback(id=test_id, action="points").pack())],
         [InlineKeyboardButton(text="❓ Редагувати питання",
                               callback_data=EditTestCallback(id=test_id, action="questions").pack())],
         [InlineKeyboardButton(text="⬅️ Назад",
@@ -323,11 +325,18 @@ def edit_questions_list_keyboard(test_id: int, questions: list[dict]) -> InlineK
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def question_edit_menu_keyboard(question_id: int, question_text: str) -> InlineKeyboardMarkup:
+def question_edit_menu_keyboard(
+    question_id: int, question_text: str, *, open_answer: bool = False,
+) -> InlineKeyboardMarkup:
+    options_label = (
+        "📝 Редагувати еталонні відповіді"
+        if open_answer
+        else "📝 Редагувати варіанти відповіді"
+    )
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Редагувати текст питання",
                               callback_data=EditQuestionCallback(id=question_id, action="text").pack())],
-        [InlineKeyboardButton(text="📝 Редагувати варіанти відповіді",
+        [InlineKeyboardButton(text=options_label,
                               callback_data=EditQuestionCallback(id=question_id, action="options").pack())],
         [InlineKeyboardButton(text="🗑 Видалити питання",
                               callback_data=EditQuestionCallback(id=question_id, action="delete").pack())],
@@ -336,25 +345,40 @@ def question_edit_menu_keyboard(question_id: int, question_text: str) -> InlineK
     ])
 
 
-def edit_options_list_keyboard(question_id: int, options: list[dict]) -> InlineKeyboardMarkup:
-    """List of options with edit/delete and mark correct."""
+def edit_options_list_keyboard(
+    question_id: int,
+    options: list[dict],
+    *,
+    open_answer: bool = False,
+    can_add: bool = False,
+    lang: str = "uk",
+) -> InlineKeyboardMarkup:
+    """List of options with edit/delete and mark correct (hidden for open-answer questions)."""
     rows = []
+    if open_answer and can_add:
+        rows.append([InlineKeyboardButton(
+            text=i18n("open_answer_add_button", lang),
+            callback_data=EditQuestionCallback(id=question_id, action="add_answer").pack(),
+        )])
     for opt in options:
-        correct_mark = "✅" if opt["is_correct"] else "⭕"
-        rows.append([
+        correct_mark = "✅ " if open_answer else ("✅" if opt["is_correct"] else "⭕")
+        label = opt["text"][:25] + ("..." if len(opt["text"]) > 25 else "")
+        row = [
             InlineKeyboardButton(
-                text=f"{correct_mark} {opt['text'][:25]}...",
+                text=f"{correct_mark}{label}",
                 callback_data=EditOptionCallback(id=opt["id"], action="edit").pack()
             ),
             InlineKeyboardButton(
                 text="🗑",
                 callback_data=EditOptionCallback(id=opt["id"], action="delete").pack()
             ),
-            InlineKeyboardButton(
+        ]
+        if not open_answer:
+            row.append(InlineKeyboardButton(
                 text="✔️",
                 callback_data=EditOptionCallback(id=opt["id"], action="mark_correct").pack()
-            ),
-        ])
+            ))
+        rows.append(row)
     rows.append([InlineKeyboardButton(text="⬅️ Назад",
                                      callback_data=BackCallback(to="question_edit").pack())])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -400,11 +424,117 @@ def back_keyboard(to: str) -> InlineKeyboardMarkup:
 
 # Statistics
 
-def statistics_keyboard() -> InlineKeyboardMarkup:
-    """Button to view statistics."""
+def statistics_subjects_keyboard(stats: list[dict]) -> InlineKeyboardMarkup:
+    """One button per subject; opens subject detail."""
+    rows = []
+    for stat in stats:
+        if stat["total_sessions"]:
+            label = f"{stat['subject_name']} · {stat['average_score']}%"
+        else:
+            label = f"{stat['subject_name']} · —"
+        rows.append([InlineKeyboardButton(
+            text=label[:64],
+            callback_data=StatisticsCallback(action="subject", id=stat["subject_id"]).pack(),
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def statistics_test_back_keyboard(subject_id: int, lang: str = "uk") -> InlineKeyboardMarkup:
+    """Back to subject statistics."""
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="📊 Переглянути статистику",
-                             callback_data=StatisticsCallback(action="view").pack()),
+        InlineKeyboardButton(
+            text=i18n("back", lang),
+            callback_data=StatisticsCallback(action="subject", id=subject_id).pack(),
+        ),
+    ]])
+
+
+def statistics_subject_view_keyboard(
+    tests: list[dict],
+    subject_id: int,
+    lang: str,
+    *,
+    show_test_buttons: bool,
+    show_overview_back: bool,
+) -> InlineKeyboardMarkup | None:
+    """Keyboard for subject stats: optional test list and/or back to overview."""
+    rows = []
+    if show_test_buttons:
+        for test in tests:
+            if not test["session_count"]:
+                continue
+            label = f"{test['title'][:36]} · {test['average_score']}%"
+            rows.append([InlineKeyboardButton(
+                text=label[:64],
+                callback_data=StatisticsCallback(
+                    action="test", id=test["id"], sub=subject_id,
+                ).pack(),
+            )])
+    if show_overview_back:
+        rows.append([InlineKeyboardButton(
+            text=i18n("back", lang),
+            callback_data=StatisticsCallback(action="view").pack(),
+        )])
+    if not rows:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# Student results
+
+def student_results_subjects_keyboard(subjects: list[dict]) -> InlineKeyboardMarkup:
+    """One button per subject with average score."""
+    rows = []
+    for subj in subjects:
+        label = f"{subj['subject_name']} · {subj['average_score']}%"
+        rows.append([InlineKeyboardButton(
+            text=label[:64],
+            callback_data=StudentResultsCallback(
+                action="subject", id=subj["subject_id"],
+            ).pack(),
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def student_results_subject_view_keyboard(
+    tests: list[dict],
+    subject_id: int,
+    lang: str,
+    *,
+    show_test_buttons: bool,
+    show_overview_back: bool,
+) -> InlineKeyboardMarkup | None:
+    """Subject results: optional test drill-down and/or back to overview."""
+    rows = []
+    if show_test_buttons:
+        for test in tests:
+            label = f"{test['title'][:36]} · {round(test['best_percentage'])}%"
+            rows.append([InlineKeyboardButton(
+                text=label[:64],
+                callback_data=StudentResultsCallback(
+                    action="test", id=test["test_id"], sub=subject_id,
+                ).pack(),
+            )])
+    if show_overview_back:
+        rows.append([InlineKeyboardButton(
+            text=i18n("back", lang),
+            callback_data=StudentResultsCallback(action="view").pack(),
+        )])
+    if not rows:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def student_results_test_back_keyboard(
+    subject_id: int, lang: str, *, single_subject: bool,
+) -> InlineKeyboardMarkup:
+    """Back from test attempts to subject (or main view if only one subject)."""
+    if single_subject:
+        back_data = StudentResultsCallback(action="view").pack()
+    else:
+        back_data = StudentResultsCallback(action="subject", id=subject_id).pack()
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=i18n("back", lang), callback_data=back_data),
     ]])
 
 

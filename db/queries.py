@@ -2,6 +2,7 @@
 Database queries module.
 Initialize with init() before use. Uses admin client to bypass RLS.
 """
+# All write operations use the admin client and bypass RLS by design.
 from __future__ import annotations
 
 import logging
@@ -9,6 +10,7 @@ import os
 import jwt as pyjwt
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from enum import Enum
 
 from supabase import AsyncClient
 from supabase.lib.client_options import AsyncClientOptions
@@ -21,6 +23,31 @@ supabase_admin: AsyncClient = None  # Admin client (bypasses RLS)
 supabase_url: str = None
 jwt_secret: str = None
 supabase_anon_key: str = os.getenv("SUPABASE_ANON_KEY") or os.getenv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY")
+
+
+class QuestionType(str, Enum):
+    """Question types for extensible question system."""
+    SINGLE_CHOICE = "single_choice"
+    MULTIPLE_CHOICE = "multiple_choice"
+    OPEN_ANSWER = "open_answer"
+    MATCHING = "matching"
+    ORDERING = "ordering"
+
+
+def normalize_answer(text: str) -> str:
+    """Normalize free-text answers for comparison (case-insensitive, collapsed whitespace)."""
+    return " ".join((text or "").strip().casefold().split())
+
+
+def matches_open_answer(student_text: str, accepted_options: list[dict]) -> bool:
+    """True if student text matches any accepted reference answer (is_correct options)."""
+    norm = normalize_answer(student_text)
+    if not norm:
+        return False
+    for opt in accepted_options:
+        if opt.get("is_correct") and normalize_answer(opt.get("text", "")) == norm:
+            return True
+    return False
 
 
 def init(admin_client: AsyncClient, jwt_secret_key: str, supabase_url_str: str) -> None:
@@ -37,6 +64,12 @@ def init(admin_client: AsyncClient, jwt_secret_key: str, supabase_url_str: str) 
 async def get_user(telegram_id: int) -> Optional[dict]:
     """Fetch user by telegram ID."""
     res = await supabase_admin.table("users").select("*").eq("telegram_id", telegram_id).execute()
+    return res.data[0] if res.data else None
+
+
+async def get_user_by_id(user_id: int) -> Optional[dict]:
+    """Fetch user by database primary key (users.id)."""
+    res = await supabase_admin.table("users").select("*").eq("id", user_id).execute()
     return res.data[0] if res.data else None
 
 
@@ -66,16 +99,12 @@ async def update_user_name(telegram_id: int, name: str) -> Optional[dict]:
 
 # Subjects
 
-async def get_subjects(telegram_id: int = None) -> list[dict]:
-    """Return all available subjects, sorted by name."""
-    # Note: telegram_id parameter kept for backwards compatibility
-    # but RLS is not enforced via JWT anymore
+async def get_subjects() -> list[dict]:
     res = await supabase_admin.table("subjects").select("*").order("name").execute()
     return res.data or []
 
 
 async def get_subject(subject_id: int) -> Optional[dict]:
-    """Fetch single subject by ID."""
     res = await supabase_admin.table("subjects").select("*").eq("id", subject_id).execute()
     return res.data[0] if res.data else None
 
@@ -87,6 +116,23 @@ async def create_subject(name: str) -> dict:
         {"name": name}, on_conflict="name"
     ).execute()
     return res.data[0]
+
+
+# Scoring helpers
+
+def session_points_total(session: dict) -> float:
+    """Max points for display (snapshot on session or legacy question count)."""
+    if session.get("max_points") is not None:
+        return float(session["max_points"])
+    return float(session.get("total_questions") or 0)
+
+
+def format_points_value(value: float | int) -> str:
+    """Format a point value for UI (one decimal when needed)."""
+    v = float(value)
+    if v == int(v):
+        return str(int(v))
+    return f"{v:.1f}"
 
 
 # Tests
@@ -101,6 +147,7 @@ async def create_test(
     show_answer_correctness: bool = True,
     max_attempts: Optional[int] = None,
     time_limit_minutes: Optional[int] = None,
+    max_points: Optional[float] = None,
 ) -> dict:
     """Create new test with given parameters."""
     res = await supabase_admin.table("tests").insert({
@@ -113,6 +160,7 @@ async def create_test(
         "show_answer_correctness": show_answer_correctness,
         "max_attempts": max_attempts,
         "time_limit_minutes": time_limit_minutes,
+        "max_points": max_points,
     }).execute()
     return res.data[0]
 
@@ -131,9 +179,8 @@ async def get_teacher_tests(teacher_id: int, telegram_id: int) -> list[dict]:
     return res.data or []
 
 
-async def get_public_tests_by_subject(subject_id: int, telegram_id: int) -> list[dict]:
+async def get_public_tests_by_subject(subject_id: int) -> list[dict]:
     """Get public tests by subject (public access, explicit filtering)."""
-    # telegram_id parameter kept for backwards compatibility
     res = (
         await supabase_admin.table("tests")
         .select("*, users(name)")
@@ -146,9 +193,8 @@ async def get_public_tests_by_subject(subject_id: int, telegram_id: int) -> list
     return res.data or []
 
 
-async def get_test_by_code(access_code: str, telegram_id: int) -> Optional[dict]:
+async def get_test_by_code(access_code: str) -> Optional[dict]:
     """Get test by access code (explicit filtering)."""
-    # telegram_id parameter kept for backwards compatibility
     res = (
         await supabase_admin.table("tests")
         .select("*, subjects(name), users(name)")
@@ -159,9 +205,8 @@ async def get_test_by_code(access_code: str, telegram_id: int) -> Optional[dict]
     return res.data[0] if res.data else None
 
 
-async def get_test(test_id: int, telegram_id: int = None) -> Optional[dict]:
+async def get_test(test_id: int) -> Optional[dict]:
     """Get test by ID (explicit filtering)."""
-    # telegram_id parameter kept for backwards compatibility
     res = (
         await supabase_admin.table("tests")
         .select("*, subjects(name), users(name)")
@@ -171,13 +216,12 @@ async def get_test(test_id: int, telegram_id: int = None) -> Optional[dict]:
     return res.data[0] if res.data else None
 
 
-async def get_test_with_questions(test_id: int, telegram_id: int = None) -> Optional[dict]:
+async def get_test_with_questions(test_id: int) -> Optional[dict]:
     """Returns test + ordered questions + options (explicit filtering)."""
-    test = await get_test(test_id, telegram_id)
+    test = await get_test(test_id)
     if not test:
         return None
 
-    # telegram_id parameter kept for backwards compatibility
     q_res = (
         await supabase_admin.table("questions")
         .select("*, options(*)")
@@ -203,10 +247,10 @@ async def deactivate_test(test_id: int, teacher_id: int) -> bool:
 
 # Questions & Options
 
-async def add_question(test_id: int, text: str, order: int) -> dict:
+async def add_question(test_id: int, text: str, order: int, question_type: str = QuestionType.SINGLE_CHOICE) -> dict:
     """Add question (admin insert, bypasses RLS)."""
     res = await supabase_admin.table("questions").insert(
-        {"test_id": test_id, "text": text, "question_order": order}
+        {"test_id": test_id, "text": text, "question_order": order, "question_type": question_type}
     ).execute()
     return res.data[0]
 
@@ -222,17 +266,24 @@ async def add_option(question_id: int, text: str, is_correct: bool) -> dict:
 async def bulk_insert_questions_options(test_id: int, questions: list[dict]) -> None:
     """
     Bulk insert questions and options (admin operation).
-    questions: [{"text": str, "options": [{"text": str, "is_correct": bool}]}]
+    questions: [{"text": str, "question_type": str, "options": [{"text": str, "is_correct": bool}]}]
     """
     for order, q in enumerate(questions):
-        q_row = await add_question(test_id, q["text"], order)
+        q_type = q.get("question_type", QuestionType.SINGLE_CHOICE)
+        q_row = await add_question(test_id, q["text"], order, q_type)
         for opt in q["options"]:
             await add_option(q_row["id"], opt["text"], opt["is_correct"])
 
 
 # Sessions & Answers
 
-async def create_session(test_id: int, student_id: int, total_questions: int, expires_at: Optional[str] = None) -> dict:
+async def create_session(
+    test_id: int,
+    student_id: int,
+    total_questions: int,
+    expires_at: Optional[str] = None,
+    max_points: Optional[float] = None,
+) -> dict:
     """Create test session (admin insert, bypasses RLS).
     Optionally set an expires_at ISO timestamp for timed tests.
     """
@@ -240,6 +291,7 @@ async def create_session(test_id: int, student_id: int, total_questions: int, ex
         "test_id": test_id,
         "student_id": student_id,
         "total_questions": total_questions,
+        "max_points": max_points,
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
     if expires_at:
@@ -261,7 +313,82 @@ async def save_answer(
     }).execute()
 
 
-async def complete_session(session_id: int, score: int, percentage: float) -> None:
+async def save_open_answer(
+    session_id: int, question_id: int, answer_text: str, is_correct: bool
+) -> None:
+    """Save free-text answer for an open-ended question."""
+    await supabase_admin.table("session_answers").insert({
+        "session_id": session_id,
+        "question_id": question_id,
+        "answer_text": answer_text.strip(),
+        "is_correct": is_correct,
+    }).execute()
+
+
+async def save_multiple_answers(
+    session_id: int, question_id: int, option_ids: list[int]
+) -> None:
+    """Save multiple student answers for a question (admin insert, bypasses RLS)."""
+    for option_id in option_ids:
+        option = await get_option(option_id)
+        is_correct = option.get("is_correct", False) if option else False
+        await supabase_admin.table("session_answers").insert({
+            "session_id": session_id,
+            "question_id": question_id,
+            "option_id": option_id,
+            "is_correct": is_correct,
+        }).execute()
+
+
+async def get_question_score(session_id: int, question_id: int) -> float:
+    """
+    Calculate score for a question (0-1).
+    For single choice / open answer: 1 if correct, 0 if wrong.
+    For multiple choice: partial credit based on correct/incorrect selections.
+    """
+    # Get all answers for this question in this session
+    answers_res = await supabase_admin.table("session_answers").select("*").eq("session_id", session_id).eq("question_id", question_id).execute()
+    answers = answers_res.data or []
+
+    # Get the question to check its type
+    question = await get_question(question_id)
+    if not question:
+        return 0.0
+
+    question_type = question.get("question_type", QuestionType.SINGLE_CHOICE)
+
+    if question_type in (QuestionType.SINGLE_CHOICE, QuestionType.OPEN_ANSWER):
+        for answer in answers:
+            if answer.get("is_correct"):
+                return 1.0
+        return 0.0
+    elif question_type == QuestionType.MULTIPLE_CHOICE:
+        # Multiple choice: calculate partial credit
+        # Get all correct options for this question
+        options_res = await supabase_admin.table("options").select("*").eq("question_id", question_id).execute()
+        options = options_res.data or []
+        correct_option_ids = {opt["id"] for opt in options if opt.get("is_correct")}
+        total_correct = len(correct_option_ids)
+
+        if total_correct == 0:
+            return 0.0
+
+        # Count correct and incorrect selections
+        selected_option_ids = {ans["option_id"] for ans in answers}
+        correct_selections = len(selected_option_ids & correct_option_ids)
+        incorrect_selections = len(selected_option_ids - correct_option_ids)
+
+        # Calculate partial credit
+        # Formula: (correct selections / total correct) - (incorrect selections * penalty)
+        # Penalty is 0.5 per incorrect selection to discourage guessing
+        score = (correct_selections / total_correct) - (incorrect_selections * 0.5)
+        return max(0.0, min(1.0, score))  # Clamp between 0 and 1
+    else:
+        # Other question types not yet implemented
+        return 0.0
+
+
+async def complete_session(session_id: int, score: float, percentage: float) -> None:
     """Save final score and percentage, mark as completed."""
     await supabase_admin.table("test_sessions").update({
         "score": score,
@@ -276,17 +403,70 @@ async def get_session(session_id: int) -> Optional[dict]:
     return res.data[0] if res.data else None
 
 
-async def get_session_score(session_id: int) -> int:
-    """Compute the current score (number of correct answers) for a session."""
-    res = await supabase_admin.table("session_answers").select("is_correct").eq("session_id", session_id).execute()
-    if not res.data:
-        return 0
-    return sum(1 for r in res.data if r.get("is_correct"))
+async def get_session_score(session_id: int) -> float:
+    """Sum of points per question (0–1 each; multiple choice may be fractional)."""
+    session = await get_session(session_id)
+    if not session:
+        return 0.0
+
+    test_id = session.get("test_id")
+    questions_res = (
+        await supabase_admin.table("questions")
+        .select("id, question_type")
+        .eq("test_id", test_id)
+        .execute()
+    )
+    questions = questions_res.data or []
+
+    total_score = 0.0
+    for question in questions:
+        question_id = question["id"]
+        question_type = question.get("question_type", QuestionType.SINGLE_CHOICE)
+
+        if question_type == QuestionType.MULTIPLE_CHOICE:
+            total_score += await get_question_score(session_id, question_id)
+        elif question_type in (QuestionType.SINGLE_CHOICE, QuestionType.OPEN_ANSWER):
+            answers_res = (
+                await supabase_admin.table("session_answers")
+                .select("is_correct")
+                .eq("session_id", session_id)
+                .eq("question_id", question_id)
+                .execute()
+            )
+            if any(a.get("is_correct") for a in (answers_res.data or [])):
+                total_score += 1.0
+    return round(total_score, 2)
 
 
-async def get_test_results(test_id: int, telegram_id: int) -> list[dict]:
+async def complete_session_from_answers(session_id: int, total_questions: int) -> tuple[float, float, int]:
+    """Finalize session; returns (scaled_score, max_points, percentage)."""
+    session = await get_session(session_id)
+    if not session:
+        return 0.0, 0.0, 0
+
+    max_pts = session.get("max_points")
+    if max_pts is None:
+        test_res = (
+            await supabase_admin.table("tests")
+            .select("max_points")
+            .eq("id", session["test_id"])
+            .execute()
+        )
+        test_row = (test_res.data or [None])[0]
+        max_pts = (test_row or {}).get("max_points") if test_row else None
+    scale = float(max_pts) if max_pts is not None else float(total_questions or 0)
+
+    raw_earned = await get_session_score(session_id)
+    ratio = raw_earned / total_questions if total_questions > 0 else 0.0
+    pct = round(ratio * 100) if total_questions > 0 else 0
+    scaled = round(ratio * scale, 1) if scale > 0 else 0.0
+
+    await complete_session(session_id, scaled, pct)
+    return scaled, scale, pct
+
+
+async def get_test_results(test_id: int) -> list[dict]:
     """Get all completed sessions for a test (explicit filtering)."""
-    # telegram_id parameter kept for backwards compatibility
     res = (
         await supabase_admin.table("test_sessions")
         .select("*, users(name)")
@@ -298,12 +478,11 @@ async def get_test_results(test_id: int, telegram_id: int) -> list[dict]:
     return res.data or []
 
 
-async def get_student_sessions(student_id: int, telegram_id: int) -> list[dict]:
+async def get_student_sessions(student_id: int) -> list[dict]:
     """Get completed sessions for a student (explicit filtering)."""
-    # telegram_id parameter kept for backwards compatibility
     res = (
         await supabase_admin.table("test_sessions")
-        .select("*, tests(title, subjects(name))")
+        .select("*, tests(title, subject_id, subjects(id, name))")
         .eq("student_id", student_id)
         .not_.is_("completed_at", "null")
         .order("completed_at", desc=True)
@@ -348,6 +527,7 @@ async def update_test(
     max_attempts: Optional[int] = None,
     time_limit_minutes: Optional[int] = None,
     set_time_limit: bool = False,
+    max_points: Optional[float] = None,
 ) -> dict:
     """Update test fields (admin operation)."""
     update_data = {}
@@ -365,7 +545,9 @@ async def update_test(
         update_data["max_attempts"] = max_attempts
     if set_time_limit:
         update_data["time_limit_minutes"] = time_limit_minutes
-    
+    if max_points is not None:
+        update_data["max_points"] = max_points
+
     res = await supabase_admin.table("tests").update(update_data).eq("id", test_id).execute()
     return res.data[0] if res.data else {}
 
@@ -422,13 +604,28 @@ async def get_option(option_id: int) -> Optional[dict]:
     return res.data[0] if res.data else None
 
 
-async def mark_option_correct(option_id: int, question_id: int) -> dict:
-    """Mark one option as correct and unmark siblings."""
-    await supabase_admin.table("options").update(
-        {"is_correct": False}
-    ).eq("question_id", question_id).execute()
+async def mark_option_correct(option_id: int, question_id: int, question_type: str = QuestionType.SINGLE_CHOICE) -> dict:
+    """Mark option as correct. For single choice, unmark siblings. For multiple choice, toggle."""
+    if question_type == QuestionType.SINGLE_CHOICE:
+        # Single choice: unmark all siblings first
+        await supabase_admin.table("options").update(
+            {"is_correct": False}
+        ).eq("question_id", question_id).execute()
+    # Mark this option as correct
     res = await supabase_admin.table("options").update(
         {"is_correct": True}
+    ).eq("id", option_id).execute()
+    return res.data[0] if res.data else {}
+
+
+async def toggle_option_correct(option_id: int) -> dict:
+    """Toggle the correctness of an option (for multiple choice questions)."""
+    option = await get_option(option_id)
+    if not option:
+        return {}
+    new_status = not option.get("is_correct", False)
+    res = await supabase_admin.table("options").update(
+        {"is_correct": new_status}
     ).eq("id", option_id).execute()
     return res.data[0] if res.data else {}
 
@@ -551,10 +748,90 @@ async def get_subject_statistics(teacher_id: int) -> list[dict]:
             if stats["total_sessions"] > 0 else 0
         )
         result.append({
+            "subject_id": stats["subject_id"],
             "subject_name": stats["subject_name"],
             "test_count": stats["test_count"],
             "total_sessions": stats["total_sessions"],
-            "average_score": avg_score
+            "average_score": avg_score,
         })
     
     return sorted(result, key=lambda x: x["subject_name"])
+
+
+async def get_subject_sessions(teacher_id: int, subject_id: int) -> list[dict]:
+    """Completed sessions for a teacher's subject with student name and test title."""
+    tests_res = (
+        await supabase_admin.table("tests")
+        .select("id, title")
+        .eq("teacher_id", teacher_id)
+        .eq("subject_id", subject_id)
+        .eq("is_active", True)
+        .execute()
+    )
+    tests = tests_res.data or []
+    if not tests:
+        return []
+
+    test_titles = {t["id"]: t["title"] for t in tests}
+    test_ids = list(test_titles.keys())
+    sessions_res = (
+        await supabase_admin.table("test_sessions")
+        .select("test_id, score, total_questions, percentage, completed_at, users(name)")
+        .in_("test_id", test_ids)
+        .not_.is_("completed_at", "null")
+        .order("completed_at", desc=True)
+        .execute()
+    )
+    sessions = sessions_res.data or []
+    for session in sessions:
+        session["test_title"] = test_titles.get(session["test_id"], "—")
+    return sessions
+
+
+async def get_subject_tests_stats(teacher_id: int, subject_id: int) -> list[dict]:
+    """Active tests in a subject with attempt count and average score."""
+    tests_res = (
+        await supabase_admin.table("tests")
+        .select("id, title")
+        .eq("teacher_id", teacher_id)
+        .eq("subject_id", subject_id)
+        .eq("is_active", True)
+        .order("title")
+        .execute()
+    )
+    tests = tests_res.data or []
+    if not tests:
+        return []
+
+    test_ids = [t["id"] for t in tests]
+    sessions_res = (
+        await supabase_admin.table("test_sessions")
+        .select("test_id, percentage")
+        .in_("test_id", test_ids)
+        .not_.is_("completed_at", "null")
+        .execute()
+    )
+    sessions = sessions_res.data or []
+
+    per_test: dict[int, dict] = {
+        t["id"]: {"id": t["id"], "title": t["title"], "session_count": 0, "total_score": 0.0}
+        for t in tests
+    }
+    for session in sessions:
+        tid = session["test_id"]
+        if tid not in per_test:
+            continue
+        per_test[tid]["session_count"] += 1
+        per_test[tid]["total_score"] += session.get("percentage", 0)
+
+    result = []
+    for item in per_test.values():
+        count = item["session_count"]
+        avg = round(item["total_score"] / count, 1) if count else 0
+        result.append({
+            "id": item["id"],
+            "title": item["title"],
+            "session_count": count,
+            "average_score": avg,
+        })
+    return sorted(result, key=lambda x: x["title"].casefold())

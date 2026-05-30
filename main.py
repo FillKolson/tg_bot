@@ -26,19 +26,16 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
 
 # Validate critical environment variables
-if not all([BOT_TOKEN, SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_JWT_SECRET]):
-    missing = []
-    if not BOT_TOKEN:
-        missing.append("BOT_TOKEN")
-    if not SUPABASE_URL:
-        missing.append("NEXT_PUBLIC_SUPABASE_URL")
-    if not SUPABASE_ANON_KEY:
-        missing.append("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY")
-    if not SUPABASE_SERVICE_ROLE_KEY:
-        missing.append("SUPABASE_SERVICE_ROLE_KEY")
-    if not SUPABASE_JWT_SECRET:
-        missing.append("SUPABASE_JWT_SECRET")
-    raise ValueError(f"❌ Missing critical environment variables: {', '.join(missing)}")
+required = {
+    "BOT_TOKEN": BOT_TOKEN,
+    "NEXT_PUBLIC_SUPABASE_URL": SUPABASE_URL,
+    "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY": SUPABASE_ANON_KEY,
+    "SUPABASE_SERVICE_ROLE_KEY": SUPABASE_SERVICE_ROLE_KEY,
+    "SUPABASE_JWT_SECRET": SUPABASE_JWT_SECRET,
+}
+missing = [k for k, v in required.items() if not v]
+if missing:
+    raise ValueError(f"Missing critical environment variables: {', '.join(missing)}")
 
 # Logging setup
 logging.basicConfig(
