@@ -2,6 +2,7 @@
 Database queries module.
 Initialize with init() before use. Uses admin client to bypass RLS.
 """
+# All write operations use the admin client and bypass RLS by design.
 from __future__ import annotations
 
 import logging
@@ -98,16 +99,12 @@ async def update_user_name(telegram_id: int, name: str) -> Optional[dict]:
 
 # Subjects
 
-async def get_subjects(telegram_id: int = None) -> list[dict]:
-    """Return all available subjects, sorted by name."""
-    # Note: telegram_id parameter kept for backwards compatibility
-    # but RLS is not enforced via JWT anymore
+async def get_subjects() -> list[dict]:
     res = await supabase_admin.table("subjects").select("*").order("name").execute()
     return res.data or []
 
 
 async def get_subject(subject_id: int) -> Optional[dict]:
-    """Fetch single subject by ID."""
     res = await supabase_admin.table("subjects").select("*").eq("id", subject_id).execute()
     return res.data[0] if res.data else None
 
@@ -182,9 +179,8 @@ async def get_teacher_tests(teacher_id: int, telegram_id: int) -> list[dict]:
     return res.data or []
 
 
-async def get_public_tests_by_subject(subject_id: int, telegram_id: int) -> list[dict]:
+async def get_public_tests_by_subject(subject_id: int) -> list[dict]:
     """Get public tests by subject (public access, explicit filtering)."""
-    # telegram_id parameter kept for backwards compatibility
     res = (
         await supabase_admin.table("tests")
         .select("*, users(name)")
@@ -197,9 +193,8 @@ async def get_public_tests_by_subject(subject_id: int, telegram_id: int) -> list
     return res.data or []
 
 
-async def get_test_by_code(access_code: str, telegram_id: int) -> Optional[dict]:
+async def get_test_by_code(access_code: str) -> Optional[dict]:
     """Get test by access code (explicit filtering)."""
-    # telegram_id parameter kept for backwards compatibility
     res = (
         await supabase_admin.table("tests")
         .select("*, subjects(name), users(name)")
@@ -210,9 +205,8 @@ async def get_test_by_code(access_code: str, telegram_id: int) -> Optional[dict]
     return res.data[0] if res.data else None
 
 
-async def get_test(test_id: int, telegram_id: int = None) -> Optional[dict]:
+async def get_test(test_id: int) -> Optional[dict]:
     """Get test by ID (explicit filtering)."""
-    # telegram_id parameter kept for backwards compatibility
     res = (
         await supabase_admin.table("tests")
         .select("*, subjects(name), users(name)")
@@ -222,13 +216,12 @@ async def get_test(test_id: int, telegram_id: int = None) -> Optional[dict]:
     return res.data[0] if res.data else None
 
 
-async def get_test_with_questions(test_id: int, telegram_id: int = None) -> Optional[dict]:
+async def get_test_with_questions(test_id: int) -> Optional[dict]:
     """Returns test + ordered questions + options (explicit filtering)."""
-    test = await get_test(test_id, telegram_id)
+    test = await get_test(test_id)
     if not test:
         return None
 
-    # telegram_id parameter kept for backwards compatibility
     q_res = (
         await supabase_admin.table("questions")
         .select("*, options(*)")
@@ -472,9 +465,8 @@ async def complete_session_from_answers(session_id: int, total_questions: int) -
     return scaled, scale, pct
 
 
-async def get_test_results(test_id: int, telegram_id: int) -> list[dict]:
+async def get_test_results(test_id: int) -> list[dict]:
     """Get all completed sessions for a test (explicit filtering)."""
-    # telegram_id parameter kept for backwards compatibility
     res = (
         await supabase_admin.table("test_sessions")
         .select("*, users(name)")
@@ -486,9 +478,8 @@ async def get_test_results(test_id: int, telegram_id: int) -> list[dict]:
     return res.data or []
 
 
-async def get_student_sessions(student_id: int, telegram_id: int) -> list[dict]:
+async def get_student_sessions(student_id: int) -> list[dict]:
     """Get completed sessions for a student (explicit filtering)."""
-    # telegram_id parameter kept for backwards compatibility
     res = (
         await supabase_admin.table("test_sessions")
         .select("*, tests(title, subject_id, subjects(id, name))")

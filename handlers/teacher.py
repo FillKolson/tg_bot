@@ -73,6 +73,18 @@ def _question_summary(data: dict) -> str:
     return f"Питань збережено: {len(qs)}"
 
 
+async def _go_to_tests_list(callback: CallbackQuery, state: FSMContext, user: dict) -> None:
+    lang = user.get("language", "uk")
+    tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
+    await state.update_data(all_tests=tests)
+    await callback.message.edit_text(
+        i18n("teacher_tests_list", lang, count=len(tests)),
+        reply_markup=my_tests_subjects_keyboard(tests),
+        parse_mode="Markdown",
+    )
+    await state.set_state(TeacherStates.viewing_tests_and_results)
+
+
 def _question_type_keyboard(lang: str = "uk") -> InlineKeyboardMarkup:
     """Keyboard for choosing question type."""
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -906,8 +918,7 @@ async def view_tests_and_results(message: Message, state: FSMContext) -> None:
     await state.update_data(all_tests=tests)
     
     await message.answer(
-        f"📋 *Ваші тести* ({len(tests)}):\n\n"
-        "Оберіть предмет, щоб переглянути тести:",
+        i18n("teacher_tests_list", user.get("language", "uk"), count=len(tests)),
         reply_markup=my_tests_subjects_keyboard(tests),
         parse_mode="Markdown",
     )
@@ -959,11 +970,12 @@ async def view_tests_by_subject(callback: CallbackQuery, callback_data: SubjectC
     user = await _require_teacher(callback)
     if not user:
         return
+    lang = user.get("language", "uk")
 
     tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
     subject_tests = [t for t in tests if t.get("subject_id") == callback_data.id]
     if not subject_tests:
-        await callback.answer("⚠️ Тести для цього предмету не знайдено.", show_alert=True)
+        await callback.answer(i18n("no_tests_in_subject_teacher", lang), show_alert=True)
         return
 
     subject_name = subject_tests[0].get("subjects", {}).get("name", "—")
@@ -985,14 +997,7 @@ async def back_to_test_subjects(callback: CallbackQuery, state: FSMContext) -> N
     if not user:
         return
 
-    tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
-    await callback.message.edit_text(
-        f"📋 *Ваші тести* ({len(tests)}):\n\n"
-        "Оберіть предмет, щоб переглянути тести:",
-        reply_markup=my_tests_subjects_keyboard(tests),
-        parse_mode="Markdown",
-    )
-    await state.set_state(TeacherStates.viewing_tests_and_results)
+    await _go_to_tests_list(callback, state, user)
     await callback.answer()
 
 
@@ -1019,9 +1024,9 @@ async def show_statistics(callback: CallbackQuery, callback_data: StatisticsCall
     if callback_data.action == "test" and callback_data.id:
         test = await queries.get_test(callback_data.id)
         if not test:
-            await callback.answer("⚠️ Тест не знайдено.", show_alert=True)
+            await callback.answer(i18n("test_not_found", lang), show_alert=True)
             return
-        sessions = await queries.get_test_results(callback_data.id, callback.from_user.id)
+        sessions = await queries.get_test_results(callback_data.id)
         subject_id = callback_data.sub or test.get("subject_id", 0)
         await callback.message.edit_text(
             _format_test_results_list(test["title"], sessions, lang),
@@ -1037,7 +1042,7 @@ async def show_statistics(callback: CallbackQuery, callback_data: StatisticsCall
             show_overview_back=len(sorted_stats) > 1,
         )
         if not text:
-            await callback.answer("⚠️ Предмет не знайдено.", show_alert=True)
+            await callback.answer(i18n("subject_not_found", lang), show_alert=True)
             return
         await callback.message.edit_text(
             text, reply_markup=keyboard, parse_mode="Markdown",
@@ -1071,7 +1076,7 @@ async def handle_test_action(callback: CallbackQuery, callback_data: TestCallbac
         # Show action menu for the selected test
         test = await queries.get_test(callback_data.id)
         if not test:
-            await callback.answer("⚠️ Тест не знайдено.", show_alert=True)
+            await callback.answer(i18n("test_not_found", lang), show_alert=True)
             return
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📊 Переглянути результати", callback_data=TestCallback(id=callback_data.id, action="results").pack())],
@@ -1089,7 +1094,7 @@ async def handle_test_action(callback: CallbackQuery, callback_data: TestCallbac
 
 async def _show_results(callback: CallbackQuery, test_id: int, state: FSMContext) -> None:
     test = await queries.get_test(test_id)
-    sessions = await queries.get_test_results(test_id, callback.from_user.id)
+    sessions = await queries.get_test_results(test_id)
 
     user = await queries.get_user(callback.from_user.id)
     lang = user.get("language", "uk") if user else "uk"
@@ -1123,8 +1128,10 @@ async def _delete_test(callback: CallbackQuery, test_id: int, state: FSMContext)
 @router.callback_query(TeacherStates.confirming_delete_test, ConfirmDeleteCallback.filter())
 async def confirm_delete_action(callback: CallbackQuery, callback_data: ConfirmDeleteCallback, state: FSMContext) -> None:
     """Handle delete confirmation."""
-    user = await queries.get_user(callback.from_user.id)
-    lang = user.get("language", "uk") if user else "uk"
+    user = await _require_teacher(callback)
+    if not user:
+        return
+    lang = user.get("language", "uk")
     data = await state.get_data()
     test_id = data.get("deleting_test_id")
     
@@ -1133,60 +1140,22 @@ async def confirm_delete_action(callback: CallbackQuery, callback_data: ConfirmD
         return
     
     if callback_data.action == "yes":
-        user = await queries.get_user(callback.from_user.id)
         deleted = await queries.deactivate_test(test_id, user["id"])
-        if deleted:
-            user = await queries.get_user(callback.from_user.id)
-            tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
-            await state.update_data(all_tests=tests)
-            await callback.message.edit_text(
-                f"📋 *Ваші тести* ({len(tests)}):\n\n"
-                "Оберіть предмет, щоб переглянути тести:",
-                reply_markup=my_tests_subjects_keyboard(tests),
-                parse_mode="Markdown",
-            )
-            await callback.answer(i18n("test_deleted", lang))
-            await state.set_state(TeacherStates.viewing_tests_and_results)
-        else:
-            user = await queries.get_user(callback.from_user.id)
-            tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
-            await state.update_data(all_tests=tests)
-            await callback.message.edit_text(
-                f"📋 *Ваші тести* ({len(tests)}):\n\n"
-                "Оберіть предмет, щоб переглянути тести:",
-                reply_markup=my_tests_subjects_keyboard(tests),
-                parse_mode="Markdown",
-            )
-            await callback.answer(i18n("delete_error", lang))
-            await state.set_state(TeacherStates.viewing_tests_and_results)
+        await _go_to_tests_list(callback, state, user)
+        await callback.answer(i18n("test_deleted", lang) if deleted else i18n("delete_error", lang))
     else:
         # Cancel deletion
-        user = await queries.get_user(callback.from_user.id)
-        tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
-        await state.update_data(all_tests=tests)
-        await callback.message.edit_text(
-            f"📋 *Ваші тести* ({len(tests)}):\n\n"
-            "Оберіть предмет, щоб переглянути тести:",
-            reply_markup=my_tests_subjects_keyboard(tests),
-            parse_mode="Markdown",
-        )
+        await _go_to_tests_list(callback, state, user)
         await callback.answer(i18n("cancelled", lang))
-        await state.set_state(TeacherStates.viewing_tests_and_results)
 
 
 @router.callback_query(TeacherStates.confirming_delete_test, BackCallback.filter())
 async def back_from_delete_confirmation(callback: CallbackQuery, state: FSMContext) -> None:
     """Return to tests list from delete confirmation."""
-    user = await queries.get_user(callback.from_user.id)
-    tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
-    await state.update_data(all_tests=tests)
-    await callback.message.edit_text(
-        f"📋 *Ваші тести* ({len(tests)}):\n\n"
-        "Оберіть предмет, щоб переглянути тести:",
-        reply_markup=my_tests_subjects_keyboard(tests),
-        parse_mode="Markdown",
-    )
-    await state.set_state(TeacherStates.viewing_tests_and_results)
+    user = await _require_teacher(callback)
+    if not user:
+        return
+    await _go_to_tests_list(callback, state, user)
     await callback.answer()
 
 
@@ -1229,12 +1198,12 @@ async def _handle_delete_test_question(
     data = await state.get_data()
     test_id = data.get("editing_test_id")
     if not test_id:
-        await callback.answer("⚠️ Помилка видалення.", show_alert=True)
+        await callback.answer(i18n("delete_error", lang), show_alert=True)
         return
 
     test = await queries.get_test_with_questions(test_id)
     if not test:
-        await callback.answer("⚠️ Помилка видалення.", show_alert=True)
+        await callback.answer(i18n("delete_error", lang), show_alert=True)
         return
 
     if len(test.get("questions", [])) <= 1:
@@ -1243,7 +1212,7 @@ async def _handle_delete_test_question(
 
     deleted = await queries.delete_question(callback_data.id)
     if not deleted:
-        await callback.answer("⚠️ Помилка видалення.", show_alert=True)
+        await callback.answer(i18n("delete_error", lang), show_alert=True)
         return
 
     test = await queries.get_test_with_questions(test_id)
@@ -1255,7 +1224,7 @@ async def _handle_delete_test_question(
         parse_mode="Markdown",
     )
     await state.set_state(TeacherStates.editing_questions_menu)
-    await callback.answer("✅ Питання видалено.")
+    await callback.answer(i18n("question_deleted", lang))
 
 
 # Edit test
@@ -1269,7 +1238,7 @@ async def edit_test_menu(callback: CallbackQuery, callback_data: EditTestCallbac
     
     test = await queries.get_test(callback_data.id)
     if not test or test["teacher_id"] != user["id"]:
-        await callback.answer("⛔ Ви не є автором цього тесту.", show_alert=True)
+        await callback.answer(i18n("not_author", lang), show_alert=True)
         return
     
     badge = "🌐" if test["is_public"] else "🔒"
@@ -1312,9 +1281,11 @@ async def edit_test_title_prompt(callback: CallbackQuery, callback_data: EditTes
 @router.message(TeacherStates.editing_test_title, F.text)
 async def edit_test_title_save(message: Message, state: FSMContext) -> None:
     """Save new title."""
+    user = await queries.get_user(message.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     new_title = message.text.strip()
     if len(new_title) < 3:
-        await message.answer("⚠️ Назва занадто коротка (мін. 3 символи):")
+        await message.answer(i18n("title_too_short", lang))
         return
     
     data = await state.get_data()
@@ -1411,7 +1382,9 @@ async def edit_test_visibility_save(callback: CallbackQuery, callback_data: Visi
         f"✅ {note}",
         parse_mode="Markdown",
     )
-    await callback.answer("Збережено!")
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+    await callback.answer(i18n("saved_notification", lang))
     
     # Return to edit test menu
     await callback.message.answer(
@@ -1496,17 +1469,17 @@ async def edit_test_time_limit_save(message: Message, state: FSMContext) -> None
 
     if text.lower() == "/skip":
         await queries.update_test(test_id, time_limit_minutes=None, set_time_limit=True)
-        await message.answer("✅ Обмеження часу вимкнено.")
+        await message.answer(i18n("time_limit_disabled", lang))
     else:
         try:
             minutes = int(text)
             if minutes <= 0:
                 raise ValueError()
         except ValueError:
-            await message.answer("⚠️ Невірний формат. Введіть число хвилин або /skip:")
+            await message.answer(i18n("time_limit_invalid", lang))
             return
         await queries.update_test(test_id, time_limit_minutes=minutes, set_time_limit=True)
-        await message.answer(f"✅ Ліміт часу оновлено: *{minutes} хв.*", parse_mode="Markdown")
+        await message.answer(i18n("time_limit_set", lang, minutes=minutes), parse_mode="Markdown")
 
     await message.answer(
         f"✏️ *Редагування тесту #{test_id}*\n\n"
@@ -1593,7 +1566,7 @@ async def edit_questions_list(callback: CallbackQuery, callback_data: EditTestCa
     questions = test.get("questions", []) if test else []
     
     if not questions:
-        await callback.answer("❓ У цьому тесті немає питань.", show_alert=True)
+        await callback.answer(i18n("no_questions_error", lang), show_alert=True)
         return
     
     await state.update_data(editing_test_id=callback_data.id)
@@ -1620,7 +1593,7 @@ async def edit_question_prompt(callback: CallbackQuery, callback_data: EditQuest
     """Show question edit menu."""
     question = await queries.get_question(callback_data.id)
     if not question:
-        await callback.answer("❌ Питання не знайдено.", show_alert=True)
+        await callback.answer(i18n("question_not_found", lang), show_alert=True)
         return
 
     await state.update_data(editing_question_id=callback_data.id)
@@ -1648,7 +1621,7 @@ async def delete_question_from_edit_menu(callback: CallbackQuery, callback_data:
 async def edit_question_text_prompt(callback: CallbackQuery, callback_data: EditQuestionCallback, state: FSMContext) -> None:
     question = await queries.get_question(callback_data.id)
     if not question:
-        await callback.answer("❌ Питання не знайдено.", show_alert=True)
+        await callback.answer(i18n("question_not_found", lang), show_alert=True)
         return
 
     await state.update_data(editing_question_id=callback_data.id)
@@ -1666,7 +1639,7 @@ async def edit_question_text_prompt(callback: CallbackQuery, callback_data: Edit
 async def edit_question_options_prompt(callback: CallbackQuery, callback_data: EditQuestionCallback, state: FSMContext) -> None:
     question = await queries.get_question(callback_data.id)
     if not question:
-        await callback.answer("❌ Питання не знайдено.", show_alert=True)
+        await callback.answer(i18n("question_not_found", lang), show_alert=True)
         return
 
     user = await queries.get_user(callback.from_user.id)
@@ -1688,7 +1661,7 @@ async def add_accepted_answer_prompt(callback: CallbackQuery, callback_data: Edi
     lang = user.get("language", "uk") if user else "uk"
     question = await queries.get_question(callback_data.id)
     if not question or not _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE)):
-        await callback.answer("❌ Питання не знайдено.", show_alert=True)
+        await callback.answer(i18n("question_not_found", lang), show_alert=True)
         return
 
     options = await queries.get_options_by_question(callback_data.id)
@@ -1717,20 +1690,20 @@ async def add_accepted_answer_prompt(callback: CallbackQuery, callback_data: Edi
 async def edit_question_text_save(message: Message, state: FSMContext) -> None:
     new_text = message.text.strip()
     if not new_text:
-        await message.answer("⚠️ Текст питання не може бути пустим. Спробуйте ще раз:")
+        await message.answer(i18n("question_text_empty", lang))
         return
 
     data = await state.get_data()
     question_id = data.get("editing_question_id")
     if not question_id:
-        await message.answer("⚠️ Не знайдено питання для редагування.")
+        await message.answer(i18n("question_edit_not_found", lang))
         return
 
     await queries.update_question(question_id, text=new_text)
     question = await queries.get_question(question_id)
     open_q = _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE))
 
-    await message.answer("✅ Текст питання оновлено.")
+    await message.answer(i18n("question_text_updated", lang))
     await message.answer(
         f"❓ *Редагування питання*\n\n{question['text']}",
         reply_markup=question_edit_menu_keyboard(
@@ -1747,7 +1720,7 @@ async def edit_option_prompt(callback: CallbackQuery, callback_data: EditOptionC
     lang = user.get("language", "uk") if user else "uk"
     option = await queries.get_option(callback_data.id)
     if not option:
-        await callback.answer("❌ Вариант не знайдено.", show_alert=True)
+        await callback.answer(i18n("option_not_found", lang), show_alert=True)
         return
 
     data = await state.get_data()
@@ -1781,18 +1754,18 @@ async def edit_option_save(message: Message, state: FSMContext) -> None:
     question_id = data.get("editing_question_id")
     adding_new = data.get("adding_new_option", False)
     if not question_id or (not adding_new and not option_id):
-        await message.answer("⚠️ Не знайдено варіант для редагування.")
+        await message.answer(i18n("option_edit_not_found", lang))
         return
 
     question = await queries.get_question(question_id)
     if not question:
-        await message.answer("⚠️ Питання не знайдено.")
+        await message.answer(i18n("question_not_found", lang))
         return
     open_q = _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE))
 
     if adding_new:
         if not open_q:
-            await message.answer("⚠️ Помилка додавання варіанту.")
+            await message.answer(i18n("adding_option_error", lang))
             return
         options = await queries.get_options_by_question(question_id)
         if len(options) >= MAX_OPTIONS:
@@ -1803,11 +1776,11 @@ async def edit_option_save(message: Message, state: FSMContext) -> None:
     else:
         option = await queries.get_option(option_id)
         if not option:
-            await message.answer("⚠️ Вариант не знайдено.")
+            await message.answer(i18n("option_not_found", lang))
             return
         is_correct = True if open_q else option["is_correct"]
         await queries.update_option(option_id, text=new_text, is_correct=is_correct)
-        saved_msg = i18n("accepted_answer_updated", lang) if open_q else "✅ Варіант оновлено."
+        saved_msg = i18n("accepted_answer_updated", lang) if open_q else i18n("option_updated", lang)
 
     await state.update_data(adding_new_option=False)
     text, keyboard = await _options_edit_screen(question_id, lang)
@@ -1823,18 +1796,18 @@ async def delete_question_option(callback: CallbackQuery, callback_data: EditOpt
     data = await state.get_data()
     question_id = data.get("editing_question_id")
     if not question_id:
-        await callback.answer("⚠️ Не знайдено питання для редагування.", show_alert=True)
+        await callback.answer(i18n("question_edit_not_found", lang), show_alert=True)
         return
 
     question = await queries.get_question(question_id)
     if not question:
-        await callback.answer("⚠️ Помилка видалення.", show_alert=True)
+        await callback.answer(i18n("delete_error", lang), show_alert=True)
         return
     open_q = _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE))
 
     option = await queries.get_option(callback_data.id)
     if not option:
-        await callback.answer("⚠️ Помилка видалення.", show_alert=True)
+        await callback.answer(i18n("delete_error", lang), show_alert=True)
         return
     if not open_q and option.get("is_correct"):
         await callback.answer(i18n("cannot_delete_correct_option", lang), show_alert=True)
@@ -1849,12 +1822,12 @@ async def delete_question_option(callback: CallbackQuery, callback_data: EditOpt
 
     deleted = await queries.delete_option(callback_data.id)
     if not deleted:
-        await callback.answer("⚠️ Помилка видалення.", show_alert=True)
+        await callback.answer(i18n("delete_error", lang), show_alert=True)
         return
 
     text, keyboard = await _options_edit_screen(question_id, lang)
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
-    deleted_msg = i18n("accepted_answer_deleted", lang) if open_q else "✅ Варіант видалено."
+    deleted_msg = i18n("accepted_answer_deleted", lang) if open_q else i18n("option_deleted", lang)
     await state.set_state(TeacherStates.editing_question_options)
     await callback.answer(deleted_msg)
 
@@ -1866,12 +1839,12 @@ async def mark_question_option_correct(callback: CallbackQuery, callback_data: E
     data = await state.get_data()
     question_id = data.get("editing_question_id")
     if not question_id:
-        await callback.answer("⚠️ Не знайдено питання для редагування.", show_alert=True)
+        await callback.answer(i18n("question_edit_not_found", lang), show_alert=True)
         return
 
     question = await queries.get_question(question_id)
     if not question:
-        await callback.answer("❌ Питання не знайдено.", show_alert=True)
+        await callback.answer(i18n("question_not_found", lang), show_alert=True)
         return
 
     question_type = question.get("question_type", QuestionType.SINGLE_CHOICE)
@@ -1901,11 +1874,13 @@ async def mark_question_option_correct(callback: CallbackQuery, callback_data: E
 
 @router.callback_query(TeacherStates.editing_question_options, BackCallback.filter())
 async def back_from_edit_question_options(callback: CallbackQuery, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     data = await state.get_data()
     question_id = data.get("editing_question_id")
     question = await queries.get_question(question_id)
     if not question:
-        await callback.answer("❌ Питання не знайдено.", show_alert=True)
+        await callback.answer(i18n("question_not_found", lang), show_alert=True)
         return
 
     open_q = _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE))
@@ -1922,11 +1897,13 @@ async def back_from_edit_question_options(callback: CallbackQuery, state: FSMCon
 
 @router.callback_query(TeacherStates.editing_question_text, BackCallback.filter())
 async def back_from_edit_question_text(callback: CallbackQuery, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
     data = await state.get_data()
     question_id = data.get("editing_question_id")
     question = await queries.get_question(question_id)
     if not question:
-        await callback.answer("❌ Питання не знайдено.", show_alert=True)
+        await callback.answer(i18n("question_not_found", lang), show_alert=True)
         return
 
     open_q = _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE))
@@ -1949,7 +1926,7 @@ async def back_from_edit_option_text(callback: CallbackQuery, state: FSMContext)
     question_id = data.get("editing_question_id")
     question = await queries.get_question(question_id)
     if not question:
-        await callback.answer("❌ Питання не знайдено.", show_alert=True)
+        await callback.answer(i18n("question_not_found", lang), show_alert=True)
         return
 
     await state.update_data(adding_new_option=False)
@@ -1964,13 +1941,13 @@ async def back_from_selecting_question(callback: CallbackQuery, state: FSMContex
     data = await state.get_data()
     test_id = data.get("editing_test_id")
     if not test_id:
-        await callback.answer("⚠️ Не знайдено тест для повернення.", show_alert=True)
+        await callback.answer(i18n("test_return_not_found", lang), show_alert=True)
         return
 
     test = await queries.get_test_with_questions(test_id)
     questions = test.get("questions", []) if test else []
     if not questions:
-        await callback.answer("❌ Не знайдено питань.", show_alert=True)
+        await callback.answer(i18n("questions_not_found", lang), show_alert=True)
         return
 
     await callback.message.edit_text(
@@ -1988,17 +1965,10 @@ async def back_from_selecting_question(callback: CallbackQuery, state: FSMContex
 @router.callback_query(TeacherStates.editing_test, BackCallback.filter())
 async def back_from_edit_menu(callback: CallbackQuery, state: FSMContext) -> None:
     """Return to tests list from edit menu."""
-    user = await queries.get_user(callback.from_user.id)
-    tests = await queries.get_teacher_tests(user["id"], callback.from_user.id)
-    await state.update_data(all_tests=tests)
-    
-    await callback.message.edit_text(
-        f"📋 *Ваші тести* ({len(tests)}):\n\n"
-        "Оберіть предмет, щоб переглянути тести:",
-        reply_markup=my_tests_subjects_keyboard(tests),
-        parse_mode="Markdown",
-    )
-    await state.set_state(TeacherStates.viewing_tests_and_results)
+    user = await _require_teacher(callback)
+    if not user:
+        return
+    await _go_to_tests_list(callback, state, user)
     await callback.answer()
 
 

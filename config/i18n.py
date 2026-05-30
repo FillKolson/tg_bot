@@ -110,6 +110,20 @@ UK = {
     "cancelled": "❌ Скасовано.",
     "not_author": "⛔ Ви не є автором цього тесту.",
     "no_tests_in_subject_teacher": "Немає тестів у цьому предметі",
+    "subject_not_found": "⚠️ Предмет не знайдено.",
+    "teacher_not_found": "⚠️ Вчителя не знайдено.",
+    "question_not_found": "❌ Питання не знайдено.",
+    "option_not_found": "❌ Варіант не знайдено.",
+    "question_edit_not_found": "⚠️ Не знайдено питання для редагування.",
+    "option_edit_not_found": "⚠️ Не знайдено варіант для редагування.",
+    "test_return_not_found": "⚠️ Не знайдено тест для повернення.",
+    "questions_not_found": "❌ Не знайдено питань.",
+    "question_text_empty": "⚠️ Текст питання не може бути пустим. Спробуйте ще раз:",
+    "adding_option_error": "⚠️ Помилка додавання варіанту.",
+    "option_updated": "✅ Варіант оновлено.",
+    "option_deleted": "✅ Варіант видалено.",
+    "question_text_updated": "✅ Текст питання оновлено.",
+    "question_deleted": "✅ Питання видалено.",
     "error_test_not_found": "⚠️ Помилка: тест не знайдено.",
     "error_generic": "⚠️ Помилка.",
     
@@ -120,6 +134,7 @@ UK = {
     
     # My tests
     "my_tests": "📋 *Ваші тести* ({count}):\n\nНатисніть назву — переглянути результати.\n🗑 — видалити тест.",
+    "teacher_tests_list": "📋 *Ваші тести* ({count}):\n\nОберіть предмет, щоб переглянути тести:",
     "no_tests": "📭 У вас ще немає жодного тесту.\nСтворіть перший через *➕ Створити тест*.",
     "test_deleted": "🗑 Тест видалено.",
     "delete_error": "⚠️ Помилка видалення.",
@@ -238,9 +253,11 @@ UK = {
     
     # Timer for tests
     "time_limit_prompt": "⏱️ Введіть обмеження часу для тесту в хвилинах (ціле число), або надішліть /skip для відсутності обмеження:",
+    "time_limit_disabled": "✅ Обмеження часу вимкнено.",
     "time_limit_invalid": "⚠️ Невірний формат. Введіть число хвилин або /skip:",
     "time_limit_set": "✅ Обмеження часу встановлено: {minutes} хв.",
     "time_up": "⏰ Час закінчився! Тест завершено.",
+    "test_session_ended": "ℹ️ Тест уже завершено. Оберіть дію в меню нижче.",
     
     # Errors and validation
     "title_too_short": "⚠️ Назва занадто коротка (мін. 3 символи):",
@@ -373,6 +390,20 @@ EN = {
     "cancelled": "❌ Cancelled.",
     "not_author": "⛔ You are not the author of this test.",
     "no_tests_in_subject_teacher": "No tests in this subject",
+    "subject_not_found": "⚠️ Subject not found.",
+    "teacher_not_found": "⚠️ Teacher not found.",
+    "question_not_found": "❌ Question not found.",
+    "option_not_found": "❌ Option not found.",
+    "question_edit_not_found": "⚠️ Question not found for editing.",
+    "option_edit_not_found": "⚠️ Option not found for editing.",
+    "test_return_not_found": "⚠️ Test to return not found.",
+    "questions_not_found": "❌ No questions found.",
+    "question_text_empty": "⚠️ Question text cannot be empty. Please try again:",
+    "adding_option_error": "⚠️ Error adding option.",
+    "option_updated": "✅ Option updated.",
+    "option_deleted": "✅ Option deleted.",
+    "question_text_updated": "✅ Question text updated.",
+    "question_deleted": "✅ Question deleted.",
     "error_test_not_found": "⚠️ Error: test not found.",
     "error_generic": "⚠️ Error.",
     
@@ -383,6 +414,7 @@ EN = {
     
     # My tests
     "my_tests": "📋 *Your Tests* ({count}):\n\nClick name to view results.\n🗑 — delete test.",
+    "teacher_tests_list": "📋 *Your Tests* ({count}):\n\nSelect a subject to view tests:",
     "no_tests": "📭 You don't have any tests yet.\nCreate your first via *➕ Create Test*.",
     "test_deleted": "🗑 Test deleted.",
     "delete_error": "⚠️ Deletion error.",
@@ -501,9 +533,11 @@ EN = {
     
     # Timer for tests
     "time_limit_prompt": "⏱️ Enter a time limit for the test in minutes (integer), or send /skip for no limit:",
+    "time_limit_disabled": "✅ Time limit disabled.",
     "time_limit_invalid": "⚠️ Invalid format. Enter number of minutes or /skip:",
     "time_limit_set": "✅ Time limit set: {minutes} minutes.",
     "time_up": "⏰ Time's up! Test finished.",
+    "test_session_ended": "ℹ️ This test is already finished. Use the menu below.",
     
     # Errors and validation
     "title_too_short": "⚠️ Name too short (minimum 3 characters):",

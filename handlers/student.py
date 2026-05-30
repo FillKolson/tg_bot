@@ -3,11 +3,12 @@ Student handlers - browse subjects, take tests, view results.
 """
 import logging
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.base import BaseStorage, StorageKey
 from aiogram.types import CallbackQuery, Message, InlineKeyboardButton, InlineKeyboardMarkup
 
 from db import queries
@@ -28,6 +29,17 @@ from states.states import StudentStates
 logger = logging.getLogger(__name__)
 router = Router()
 
+_STUDENT_MENU_TEXTS = frozenset({
+    i18n("menu_subjects", "uk"), i18n("menu_subjects", "en"),
+    "📚 Предмети", "📚 Subjects", "Предмети", "Subjects",
+    i18n("menu_enter_code", "uk"), i18n("menu_enter_code", "en"),
+    "🔑 Ввести код", "🔑 Enter Code", "Ввести код", "Enter Code",
+    i18n("menu_my_results", "uk"), i18n("menu_my_results", "en"),
+    "Мої результати", "My Results",
+    i18n("menu_search", "uk"), i18n("menu_search", "en"),
+    "🔍 Пошук", "🔍 Search", "Пошук", "Search",
+})
+
 
 def _multiple_answer_keyboard(question_id: int, options: list[dict], selected_ids: list[int]) -> InlineKeyboardMarkup:
     """Keyboard for selecting multiple answers for a multiple choice question."""
@@ -47,40 +59,125 @@ def _multiple_answer_keyboard(question_id: int, options: list[dict], selected_id
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _expiry_watcher(session_id: int, expires_iso: str, chat_id: int, bot) -> None:
-    """Background task that waits until expires_iso, then completes session if not finished and notifies student."""
+def _is_time_expired(expires_at: Optional[str]) -> bool:
+    if not expires_at:
+        return False
     try:
-        from datetime import datetime, timezone
+        ex = expires_at
+        if ex.endswith("Z"):
+            ex = ex[:-1] + "+00:00"
+        return datetime.now(timezone.utc) >= datetime.fromisoformat(ex)
+    except Exception:
+        return False
 
+
+async def _clear_taking_test_state(
+    bot, storage: Optional[BaseStorage], telegram_user_id: int, chat_id: int,
+) -> None:
+    if not bot or not storage:
+        return
+    key = StorageKey(bot_id=bot.id, chat_id=chat_id, user_id=telegram_user_id)
+    await storage.set_state(key=key, state=None)
+    await storage.set_data(key=key, data={})
+
+
+async def _abort_taking_test_if_over(
+    message: Optional[Message],
+    callback: Optional[CallbackQuery],
+    state: FSMContext,
+    *,
+    notify: bool = True,
+) -> bool:
+    """If the attempt is finished or time is up, clear FSM. Returns True when test is over."""
+    data = await state.get_data()
+    session_id = data.get("session_id")
+    if not session_id:
+        await state.clear()
+        return False
+
+    session = await queries.get_session(session_id)
+    lang = data.get("lang", "uk")
+    total_q = len(data.get("questions", []))
+    already_done = bool(session and session.get("completed_at"))
+    expired = _is_time_expired(data.get("expires_at"))
+
+    if not already_done and not expired:
+        return False
+
+    if not already_done and expired:
+        await queries.complete_session_from_answers(session_id, total_q)
+
+    await state.clear()
+    if not notify:
+        return True
+
+    target = message if message else callback.message
+    if callback:
+        if already_done:
+            await callback.answer(i18n("test_session_ended", lang), show_alert=True)
+        else:
+            await target.answer(i18n("time_up", lang), reply_markup=student_menu(lang))
+            await callback.answer()
+    else:
+        text = i18n("test_session_ended", lang) if already_done else i18n("time_up", lang)
+        await target.answer(text, reply_markup=student_menu(lang))
+    return True
+
+
+async def _route_student_menu(message: Message, state: FSMContext) -> None:
+    """Dispatch reply-menu button while leaving taking_test state."""
+    text = message.text.strip()
+    if text in {
+        i18n("menu_my_results", "uk"), i18n("menu_my_results", "en"),
+        "Мої результати", "My Results",
+    }:
+        await my_results(message, state)
+    elif text in {"📚 Предмети", "📚 Subjects", "Предмети", "Subjects"}:
+        await browse_subjects(message, state)
+    elif text in {
+        "🔑 Ввести код", "🔑 Enter Code", "Ввести код", "Enter Code",
+    }:
+        await enter_code_prompt(message, state)
+    elif text in {"🔍 Пошук", "🔍 Search", "Пошук", "Search"}:
+        await search_tests(message, state)
+
+
+async def _expiry_watcher(
+    session_id: int,
+    expires_iso: str,
+    telegram_user_id: int,
+    chat_id: int,
+    bot,
+    storage: Optional[BaseStorage],
+) -> None:
+    """Background task: on timeout complete session, clear FSM, notify student."""
+    try:
         ex = expires_iso
         if ex.endswith("Z"):
             ex = ex[:-1] + "+00:00"
         exp_dt = datetime.fromisoformat(ex)
-        now = datetime.now(timezone.utc)
-        wait = (exp_dt - now).total_seconds()
+        wait = (exp_dt - datetime.now(timezone.utc)).total_seconds()
         if wait > 0:
             await asyncio.sleep(wait)
 
-        # Re-check session status
         session = await queries.get_session(session_id)
-        if not session:
-            return
-        if session.get("completed_at"):
+        if not session or session.get("completed_at"):
             return
 
         total = session.get("total_questions") or 0
         await queries.complete_session_from_answers(session_id, total)
+        await _clear_taking_test_state(bot, storage, telegram_user_id, chat_id)
 
-        # Notify student (student_id is users.id, not telegram_id)
         user = await queries.get_user_by_id(session.get("student_id"))
         lang = user.get("language", "uk") if user else "uk"
         try:
-            await bot.send_message(chat_id, i18n("time_up", lang))
+            await bot.send_message(
+                chat_id, i18n("time_up", lang), reply_markup=student_menu(lang),
+            )
         except Exception:
-            # best-effort notify
             pass
     except Exception:
-        return
+        logger.exception("Expiry watcher failed for session %s", session_id)
 
 def _attempts_label(max_attempts: int, lang: str) -> str:
     if lang == "en":
@@ -157,7 +254,7 @@ async def browse_subjects(message: Message, state: FSMContext) -> None:
         return
     lang = user.get("language", "uk")
     await state.clear()
-    subjects = await queries.get_subjects(message.from_user.id)
+    subjects = await queries.get_subjects()
 
     if not subjects:
         await message.answer(i18n("no_public_tests", lang))
@@ -176,7 +273,7 @@ async def browse_tests(callback: CallbackQuery, callback_data: SubjectCallback, 
     user = await queries.get_user(callback.from_user.id)
     lang = user.get("language", "uk") if user else "uk"
     subject = await queries.get_subject(callback_data.id)
-    tests = await queries.get_public_tests_by_subject(callback_data.id, callback.from_user.id)
+    tests = await queries.get_public_tests_by_subject(callback_data.id)
 
     if not tests:
         await callback.answer(i18n("no_tests_in_subject", lang), show_alert=True)
@@ -196,7 +293,7 @@ async def browse_tests(callback: CallbackQuery, callback_data: SubjectCallback, 
 async def back_to_subjects(callback: CallbackQuery, state: FSMContext) -> None:
     user = await queries.get_user(callback.from_user.id)
     lang = user.get("language", "uk") if user else "uk"
-    subjects = await queries.get_subjects(callback.from_user.id)
+    subjects = await queries.get_subjects()
     await callback.message.edit_text(
         i18n("select_subject", lang),
         reply_markup=subjects_keyboard(subjects, lang=lang),
@@ -227,7 +324,7 @@ async def process_access_code(message: Message, state: FSMContext) -> None:
     user = await queries.get_user(message.from_user.id)
     lang = user.get("language", "uk") if user else "uk"
     code = message.text.strip().upper()
-    test = await queries.get_test_by_code(code, message.from_user.id)
+    test = await queries.get_test_by_code(code)
 
     if not test:
         await message.answer(i18n("code_not_found", lang))
@@ -262,7 +359,7 @@ async def test_preview(callback: CallbackQuery, callback_data: TestCallback, sta
         return
     lang = user.get("language", "uk")
 
-    test = await queries.get_test(callback_data.id, callback.from_user.id)
+    test = await queries.get_test(callback_data.id)
     if not test:
         await callback.answer(i18n("test_not_found", lang), show_alert=True)
         return
@@ -308,7 +405,7 @@ async def start_test(callback: CallbackQuery, callback_data: TestCallback, state
         return
     lang = user.get("language", "uk")
 
-    test = await queries.get_test_with_questions(callback_data.id, callback.from_user.id)
+    test = await queries.get_test_with_questions(callback_data.id)
     if not test or not test.get("questions"):
         await callback.answer(i18n("test_no_questions", lang), show_alert=True)
         return
@@ -350,7 +447,14 @@ async def start_test(callback: CallbackQuery, callback_data: TestCallback, state
     # Start background watcher to auto-complete and notify when time expires
     if expires_at:
         try:
-            asyncio.create_task(_expiry_watcher(session["id"], expires_at, callback.from_user.id, callback.bot))
+            asyncio.create_task(_expiry_watcher(
+                session["id"],
+                expires_at,
+                callback.from_user.id,
+                callback.message.chat.id,
+                callback.bot,
+                state.storage,
+            ))
         except Exception:
             logger.exception("Failed to start expiry watcher task")
 
@@ -402,9 +506,20 @@ async def _send_question(message: Message, state: FSMContext) -> None:
     )
 
 
+@router.message(StudentStates.taking_test, F.text.in_(_STUDENT_MENU_TEXTS))
+async def student_menu_during_test(message: Message, state: FSMContext) -> None:
+    """Reply menu during a test (e.g. after time expired FSM was not cleared)."""
+    await _abort_taking_test_if_over(message, None, state, notify=False)
+    await state.clear()
+    await _route_student_menu(message, state)
+
+
 @router.message(StudentStates.taking_test, F.text)
 async def handle_open_answer_text(message: Message, state: FSMContext) -> None:
     """Free-text answer for open-ended questions."""
+    if await _abort_taking_test_if_over(message, None, state):
+        return
+
     data = await state.get_data()
     lang = data.get("lang", "uk")
     questions = data["questions"]
@@ -420,24 +535,6 @@ async def handle_open_answer_text(message: Message, state: FSMContext) -> None:
     if not answer_text:
         await message.answer(i18n("open_answer_empty", lang))
         return
-
-    expires_at = data.get("expires_at")
-    if expires_at:
-        try:
-            from datetime import datetime, timezone
-
-            ex = expires_at
-            if ex.endswith("Z"):
-                ex = ex[:-1] + "+00:00"
-            exp_dt = datetime.fromisoformat(ex)
-            if datetime.now(timezone.utc) >= exp_dt:
-                total_q = len(questions)
-                await queries.complete_session_from_answers(data["session_id"], total_q)
-                await state.clear()
-                await message.answer(i18n("time_up", lang), reply_markup=student_menu(lang))
-                return
-        except Exception:
-            pass
 
     is_correct = matches_open_answer(answer_text, q.get("options", []))
     await save_open_answer(data["session_id"], q["id"], answer_text, is_correct)
@@ -467,6 +564,9 @@ async def handle_open_answer_text(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(StudentStates.taking_test, F.data.startswith("ans:"))
 async def handle_answer(callback: CallbackQuery, state: FSMContext) -> None:
+    if await _abort_taking_test_if_over(None, callback, state):
+        return
+
     user = await queries.get_user(callback.from_user.id)
     lang = user.get("language", "uk") if user else "uk"
     _, q_id_str, opt_id_str = callback.data.split(":")
@@ -496,29 +596,6 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     # Single choice handling
-    # Check if session expired
-    expires_at = data.get("expires_at")
-    if expires_at:
-        try:
-            from datetime import datetime, timezone
-
-            ex = expires_at
-            if ex.endswith("Z"):
-                ex = ex[:-1] + "+00:00"
-            exp_dt = datetime.fromisoformat(ex)
-            now = datetime.now(timezone.utc)
-            if now >= exp_dt:
-                # finalize session as expired
-                total_q = len(questions)
-                await queries.complete_session_from_answers(data["session_id"], total_q)
-                await state.clear()
-                await callback.message.answer(i18n("time_up", lang), reply_markup=student_menu(lang))
-                await callback.answer()
-                return
-        except Exception:
-            # If parsing fails, ignore and continue
-            pass
-
     # Find selected option
     selected_opt = next((o for o in q["options"] if o["id"] == option_id), None)
     if not selected_opt:
@@ -564,6 +641,9 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(StudentStates.taking_test, F.data.startswith("mult_ans_confirm:"))
 async def handle_multiple_answer_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    if await _abort_taking_test_if_over(None, callback, state):
+        return
+
     user = await queries.get_user(callback.from_user.id)
     lang = user.get("language", "uk") if user else "uk"
     _, q_id_str = callback.data.split(":")
@@ -579,28 +659,6 @@ async def handle_multiple_answer_confirm(callback: CallbackQuery, state: FSMCont
     if not selected_option_ids:
         await callback.answer(i18n("select_at_least_one", lang), show_alert=True)
         return
-
-    # Check if session expired
-    expires_at = data.get("expires_at")
-    if expires_at:
-        try:
-            from datetime import datetime, timezone
-
-            ex = expires_at
-            if ex.endswith("Z"):
-                ex = ex[:-1] + "+00:00"
-            exp_dt = datetime.fromisoformat(ex)
-            now = datetime.now(timezone.utc)
-            if now >= exp_dt:
-                # finalize session as expired
-                total_q = len(questions)
-                await queries.complete_session_from_answers(data["session_id"], total_q)
-                await state.clear()
-                await callback.message.answer(i18n("time_up", lang), reply_markup=student_menu(lang))
-                await callback.answer()
-                return
-        except Exception:
-            pass
 
     # Save multiple answers
     await queries.save_multiple_answers(data["session_id"], question_id, selected_option_ids)
@@ -656,7 +714,7 @@ async def my_results(message: Message, state: FSMContext) -> None:
     lang = user.get("language", "uk")
     await state.clear()
 
-    sessions = await queries.get_student_sessions(user["id"], message.from_user.id)
+    sessions = await queries.get_student_sessions(user["id"])
     if not sessions:
         await message.answer(i18n("no_results_student", lang))
         return
@@ -681,7 +739,7 @@ async def my_results_callback(
     data = await state.get_data()
     sessions = data.get("my_results_sessions")
     if not sessions:
-        sessions = await queries.get_student_sessions(user["id"], callback.from_user.id)
+        sessions = await queries.get_student_sessions(user["id"])
         await state.update_data(my_results_sessions=sessions)
 
     if not sessions:
@@ -701,7 +759,7 @@ async def my_results_callback(
             scope = sessions
         test_sessions = [s for s in scope if s.get("test_id") == callback_data.id]
         if not test_sessions:
-            await callback.answer("⚠️ Тест не знайдено.", show_alert=True)
+            await callback.answer(i18n("test_not_found", lang), show_alert=True)
             return
         if not subject_id:
             test = test_sessions[0].get("tests") or {}
@@ -723,7 +781,7 @@ async def my_results_callback(
             show_overview_back=not single_subject,
         )
         if not text:
-            await callback.answer("⚠️ Предмет не знайдено.", show_alert=True)
+            await callback.answer(i18n("subject_not_found", lang), show_alert=True)
             return
         await callback.message.edit_text(
             text, reply_markup=keyboard, parse_mode="Markdown",
@@ -1051,7 +1109,7 @@ async def show_tests_by_subject(callback: CallbackQuery, callback_data: SubjectC
     user = await queries.get_user(callback.from_user.id)
     lang = user.get("language", "uk") if user else "uk"
     subject = await queries.get_subject(callback_data.id)
-    tests = await queries.get_public_tests_by_subject(callback_data.id, callback.from_user.id)
+    tests = await queries.get_public_tests_by_subject(callback_data.id)
     
     if not tests:
         await callback.answer(i18n("no_tests_in_subject", lang), show_alert=True)
@@ -1093,7 +1151,7 @@ async def show_tests_by_teacher(callback: CallbackQuery, callback_data: TeacherF
     lang = user.get("language", "uk") if user else "uk"
     teacher = await queries.get_user_by_id(callback_data.id)
     if not teacher:
-        await callback.answer("⚠️ Вчителя не знайдено.", show_alert=True)
+        await callback.answer(i18n("teacher_not_found", lang), show_alert=True)
         return
 
     tests = await queries.get_tests_by_teacher(callback_data.id)
@@ -1161,7 +1219,7 @@ async def back_from_test_selection(callback: CallbackQuery, state: FSMContext) -
     """Return to subjects from test selection."""
     user = await queries.get_user(callback.from_user.id)
     lang = user.get("language", "uk") if user else "uk"
-    subjects = await queries.get_subjects(callback.from_user.id)
+    subjects = await queries.get_subjects()
     await callback.message.edit_text(
         i18n("select_subject", lang),
         reply_markup=subjects_keyboard(subjects, lang=lang),
