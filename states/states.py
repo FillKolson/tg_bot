@@ -54,6 +54,9 @@ class TeacherStates(StatesGroup):
     editing_question_option_index = State()  # which option to edit
     editing_question_correct = State()  # picking correct answer after edits
 
+    # Demo self-test for teacher
+    demo_taking_test = State()
+
     # Statistics
     viewing_statistics = State()
 
