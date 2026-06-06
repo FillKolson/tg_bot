@@ -4,6 +4,7 @@ Teacher handlers - create tests, manage questions, view results.
 import logging
 import random
 import string
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from aiogram import Router, F
@@ -28,8 +29,9 @@ from keyboards.keyboards import (
     subject_tests_list_keyboard, answer_keyboard,
     answer_visibility_keyboard, attempts_keyboard, limited_attempts_keyboard,
     edit_test_menu_keyboard, edit_questions_list_keyboard, edit_options_list_keyboard,
-    question_edit_menu_keyboard, statistics_subjects_keyboard,
-    statistics_subject_view_keyboard, statistics_test_back_keyboard,
+    question_edit_menu_keyboard, statistics_period_keyboard,
+    statistics_subjects_keyboard, statistics_subject_view_keyboard,
+    statistics_test_back_keyboard,
     confirm_delete_keyboard, back_keyboard,
 )
 from states.states import TeacherStates
@@ -64,6 +66,17 @@ async def _require_teacher(message_or_cq) -> Optional[dict]:
 
 def _generate_code(length: int = 6) -> str:
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
+
+
+def _period_start(period: str) -> str | None:
+    now = datetime.now(timezone.utc)
+    if period == "week":
+        since = now - timedelta(days=7)
+    elif period == "month":
+        since = now - timedelta(days=30)
+    else:
+        return None
+    return since.astimezone(timezone.utc).isoformat()
 
 
 def _question_summary(data: dict) -> str:
@@ -339,7 +352,7 @@ def _stats_weighted_average(stats: list[dict]) -> float:
     )
 
 
-def _format_stats_overview(stats: list[dict], lang: str) -> str:
+def _format_stats_overview(stats: list[dict], lang: str, *, period: str = "all") -> str:
     total_subjects = len(stats)
     total_tests = sum(s["test_count"] for s in stats)
     total_sessions = sum(s["total_sessions"] for s in stats)
@@ -358,6 +371,9 @@ def _format_stats_overview(stats: list[dict], lang: str) -> str:
             "stats_overview_pending", lang,
             tests=total_tests, subjects=total_subjects,
         ))
+
+    lines.append("")
+    lines.append(i18n("stats_period_label", lang, period=i18n(f"stats_period_{period}", lang)))
 
     if len(stats) > 1:
         lines.extend(["", i18n("stats_pick_subject", lang)])
@@ -389,9 +405,10 @@ def _format_test_results_list(test_title: str, sessions: list[dict], lang: str) 
 
 
 def _format_stats_subject(
-    stat: dict, sessions: list[dict], lang: str, *, max_lines: int = STATS_MAX_LINES,
+    stat: dict, sessions: list[dict], lang: str, *, period: str = "all", max_lines: int = STATS_MAX_LINES,
 ) -> str:
     lines = [i18n("stats_subject_title", lang, name=stat["subject_name"])]
+    lines.append(i18n("stats_period_label", lang, period=i18n(f"stats_period_{period}", lang)))
     if stat["total_sessions"]:
         pct = int(round(stat["average_score"]))
         lines.append(i18n(
@@ -414,15 +431,21 @@ def _format_stats_subject(
 
 
 async def _subject_stats_reply(
-    user: dict, subject_id: int, lang: str, *, show_overview_back: bool,
+    user: dict,
+    subject_id: int,
+    lang: str,
+    *,
+    show_overview_back: bool,
+    since: str | None = None,
+    period: str = "all",
 ) -> tuple[str | None, InlineKeyboardMarkup | None]:
-    stats = await queries.get_subject_statistics(user["id"])
+    stats = await queries.get_subject_statistics(user["id"], since=since)
     stat = next((s for s in stats if s["subject_id"] == subject_id), None)
     if not stat:
         return None, None
-    sessions = await queries.get_subject_sessions(user["id"], subject_id)
-    tests = await queries.get_subject_tests_stats(user["id"], subject_id)
-    text = _format_stats_subject(stat, sessions, lang)
+    sessions = await queries.get_subject_sessions(user["id"], subject_id, since=since)
+    tests = await queries.get_subject_tests_stats(user["id"], subject_id, since=since)
+    text = _format_stats_subject(stat, sessions, lang, period=period)
     tests_with_results = [t for t in tests if t["session_count"]]
     show_test_buttons = len(tests_with_results) > 1 or len(sessions) > STATS_MAX_LINES
     keyboard = statistics_subject_view_keyboard(
@@ -430,6 +453,8 @@ async def _subject_stats_reply(
         show_test_buttons=show_test_buttons,
         show_overview_back=show_overview_back,
     )
+    if keyboard is not None:
+        keyboard.inline_keyboard.extend(statistics_period_keyboard(lang, subject_id=subject_id).inline_keyboard)
     return text, keyboard
 
 
@@ -1096,8 +1121,9 @@ async def view_statistics(message: Message, state: FSMContext) -> None:
         return
     lang = user.get("language", "uk")
     await state.clear()
-
-    stats = await queries.get_subject_statistics(user["id"])
+    period = "all"
+    since = _period_start(period)
+    stats = await queries.get_subject_statistics(user["id"], since=since)
     if not stats:
         await message.answer(
             f"{i18n('stats_title', lang)}\n\n{i18n('stats_empty', lang)}",
@@ -1108,7 +1134,12 @@ async def view_statistics(message: Message, state: FSMContext) -> None:
     sorted_stats = _sort_statistics(stats)
     if len(sorted_stats) == 1:
         text, reply_markup = await _subject_stats_reply(
-            user, sorted_stats[0]["subject_id"], lang, show_overview_back=False,
+            user,
+            sorted_stats[0]["subject_id"],
+            lang,
+            show_overview_back=False,
+            since=since,
+            period=period,
         )
         if not text:
             await message.answer(
@@ -1117,8 +1148,9 @@ async def view_statistics(message: Message, state: FSMContext) -> None:
             )
             return
     else:
-        text = _format_stats_overview(sorted_stats, lang)
+        text = _format_stats_overview(sorted_stats, lang, period=period)
         reply_markup = statistics_subjects_keyboard(sorted_stats)
+        reply_markup.inline_keyboard.extend(statistics_period_keyboard(lang).inline_keyboard)
     await message.answer(text, reply_markup=reply_markup, parse_mode="Markdown")
     await state.set_state(TeacherStates.viewing_statistics)
 
@@ -1168,7 +1200,13 @@ async def show_statistics(callback: CallbackQuery, callback_data: StatisticsCall
         return
     lang = user.get("language", "uk")
 
-    stats = await queries.get_subject_statistics(user["id"])
+    data = await state.get_data()
+    period = data.get("stats_period", "all")
+    if callback_data.action == "period":
+        period = callback_data.period or "all"
+    await state.update_data(stats_period=period)
+    since = _period_start(period)
+    stats = await queries.get_subject_statistics(user["id"], since=since)
     if not stats:
         await callback.message.edit_text(
             f"{i18n('stats_title', lang)}\n\n{i18n('stats_empty', lang)}",
@@ -1180,12 +1218,33 @@ async def show_statistics(callback: CallbackQuery, callback_data: StatisticsCall
 
     sorted_stats = _sort_statistics(stats)
 
+    if callback_data.action == "period":
+        period = callback_data.period or "all"
+        await state.update_data(stats_period=period)
+        subject_id = callback_data.id or 0
+        if subject_id:
+            text, keyboard = await _subject_stats_reply(
+                user,
+                subject_id,
+                lang,
+                show_overview_back=len(sorted_stats) > 1,
+                since=_period_start(period),
+                period=period,
+            )
+            if not text:
+                await callback.answer(i18n("subject_not_found", lang), show_alert=True)
+                return
+            await state.update_data(stats_subject_id=subject_id)
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+            await callback.answer()
+            return
+
     if callback_data.action == "test" and callback_data.id:
         test = await queries.get_test(callback_data.id)
         if not test:
             await callback.answer(i18n("test_not_found", lang), show_alert=True)
             return
-        sessions = await queries.get_test_results(callback_data.id)
+        sessions = await queries.get_test_results(callback_data.id, since=since)
         subject_id = callback_data.sub or test.get("subject_id", 0)
         await callback.message.edit_text(
             _format_test_results_list(test["title"], sessions, lang),
@@ -1197,12 +1256,17 @@ async def show_statistics(callback: CallbackQuery, callback_data: StatisticsCall
 
     if callback_data.action == "subject" and callback_data.id:
         text, keyboard = await _subject_stats_reply(
-            user, callback_data.id, lang,
+            user,
+            callback_data.id,
+            lang,
             show_overview_back=len(sorted_stats) > 1,
+            since=since,
+            period=period,
         )
         if not text:
             await callback.answer(i18n("subject_not_found", lang), show_alert=True)
             return
+        await state.update_data(stats_subject_id=callback_data.id)
         await callback.message.edit_text(
             text, reply_markup=keyboard, parse_mode="Markdown",
         )
@@ -1211,15 +1275,23 @@ async def show_statistics(callback: CallbackQuery, callback_data: StatisticsCall
 
     if len(sorted_stats) == 1:
         text, keyboard = await _subject_stats_reply(
-            user, sorted_stats[0]["subject_id"], lang, show_overview_back=False,
+            user,
+            sorted_stats[0]["subject_id"],
+            lang,
+            show_overview_back=False,
+            since=since,
+            period=period,
         )
+        await state.update_data(stats_subject_id=sorted_stats[0]["subject_id"])
         await callback.message.edit_text(
             text, reply_markup=keyboard, parse_mode="Markdown",
         )
     else:
+        reply_markup = statistics_subjects_keyboard(sorted_stats)
+        reply_markup.inline_keyboard.extend(statistics_period_keyboard(lang).inline_keyboard)
         await callback.message.edit_text(
-            _format_stats_overview(sorted_stats, lang),
-            reply_markup=statistics_subjects_keyboard(sorted_stats),
+            _format_stats_overview(sorted_stats, lang, period=period),
+            reply_markup=reply_markup,
             parse_mode="Markdown",
         )
     await callback.answer()

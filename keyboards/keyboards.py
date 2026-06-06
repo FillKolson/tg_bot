@@ -438,6 +438,26 @@ def back_keyboard(to: str) -> InlineKeyboardMarkup:
 
 # Statistics
 
+def statistics_period_keyboard(lang: str = "uk", *, subject_id: int = 0) -> InlineKeyboardMarkup:
+    """Buttons to switch teacher statistics by period."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text=i18n("stats_period_all", lang),
+                callback_data=StatisticsCallback(action="period", id=subject_id, period="all").pack(),
+            ),
+            InlineKeyboardButton(
+                text=i18n("stats_period_week", lang),
+                callback_data=StatisticsCallback(action="period", id=subject_id, period="week").pack(),
+            ),
+            InlineKeyboardButton(
+                text=i18n("stats_period_month", lang),
+                callback_data=StatisticsCallback(action="period", id=subject_id, period="month").pack(),
+            ),
+        ],
+    ])
+
+
 def statistics_subjects_keyboard(stats: list[dict]) -> InlineKeyboardMarkup:
     """One button per subject; opens subject detail."""
     rows = []
