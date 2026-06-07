@@ -7,7 +7,7 @@ from aiogram.types import Message, CallbackQuery
 
 from db import queries
 from keyboards.keyboards import teacher_menu, student_menu, language_keyboard, profile_menu_keyboard, language_select_keyboard
-from keyboards.callbacks import ProfileCallback, LangCallback
+from keyboards.callbacks import ProfileCallback, LangCallback, BackCallback
 from states.states import AuthStates, ProfileStates
 from config.i18n import i18n
 
@@ -166,4 +166,23 @@ async def profile_name_entered(message: Message, state: FSMContext) -> None:
     await state.clear()
     menu = teacher_menu(lang) if user["role"] == "teacher" else student_menu(lang)
     await message.answer(i18n("welcome_back", lang, name=name, role=i18n(f"role_{user['role']}", lang)), reply_markup=menu, parse_mode="Markdown")
+
+
+@router.callback_query(ProfileStates.choosing_action, BackCallback.filter(F.to == "menu"))
+async def profile_back_to_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    """Handle back button in profile menu - return to main menu."""
+    user = await queries.get_user(callback.from_user.id)
+    if not user:
+        await callback.answer(i18n("not_registered", "uk"), show_alert=True)
+        return
+    
+    lang = user.get("language", "uk")
+    await state.clear()
+    menu = teacher_menu(lang) if user["role"] == "teacher" else student_menu(lang)
+    await callback.message.edit_text(
+        i18n("welcome_back", lang, name=user["name"], role=i18n(f"role_{user['role']}", lang)),
+        reply_markup=menu,
+        parse_mode="Markdown",
+    )
+    await callback.answer()
 

@@ -19,7 +19,7 @@ class SubjectCallback(CallbackData, prefix="subj"):
 
 class TestCallback(CallbackData, prefix="test"):
     id: int
-    action: str  # "start" | "results" | "delete" | "back"
+    action: str  # "start" | "results" | "delete" | "back" | "demo"
 
 
 class VisibilityCallback(CallbackData, prefix="vis"):
@@ -63,7 +63,7 @@ class NewSubjectCallback(CallbackData, prefix="newsubj"):
 
 class EditTestCallback(CallbackData, prefix="editest"):
     id: int
-    action: str  # "menu" | "title" | "desc" | "vis" | "attempts" | "questions"
+    action: str  # "menu" | "title" | "desc" | "vis" | "attempts" | "questions" | "add_question"
 
 
 class EditQuestionCallback(CallbackData, prefix="editq"):
@@ -89,9 +89,10 @@ class TeacherFilterCallback(CallbackData, prefix="tfilter"):
 # Statistics
 
 class StatisticsCallback(CallbackData, prefix="stats"):
-    action: str  # "view" | "subject" | "test"
+    action: str  # "view" | "subject" | "test" | "period"
     id: int = 0  # subject_id or test_id depending on action
     sub: int = 0  # subject_id when action == "test" (for back navigation)
+    period: str = "all"  # "all" | "week" | "month"
 
 
 # Delete confirmation

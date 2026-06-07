@@ -4,6 +4,7 @@ Teacher handlers - create tests, manage questions, view results.
 import logging
 import random
 import string
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from aiogram import Router, F
@@ -11,7 +12,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from db import queries
-from db.queries import QuestionType
+from db.queries import QuestionType, matches_open_answer
 from config.i18n import i18n
 from keyboards.callbacks import (
     SubjectCallback, VisibilityCallback, OptionCallback,
@@ -25,11 +26,12 @@ from keyboards.keyboards import (
     teacher_menu, subjects_keyboard, visibility_keyboard,
     options_input_keyboard, correct_option_keyboard,
     question_next_keyboard, my_tests_subjects_keyboard,
-    subject_tests_list_keyboard,
+    subject_tests_list_keyboard, answer_keyboard,
     answer_visibility_keyboard, attempts_keyboard, limited_attempts_keyboard,
     edit_test_menu_keyboard, edit_questions_list_keyboard, edit_options_list_keyboard,
-    question_edit_menu_keyboard, statistics_subjects_keyboard,
-    statistics_subject_view_keyboard, statistics_test_back_keyboard,
+    question_edit_menu_keyboard, statistics_period_keyboard,
+    statistics_subjects_keyboard, statistics_subject_view_keyboard,
+    statistics_test_back_keyboard,
     confirm_delete_keyboard, back_keyboard,
 )
 from states.states import TeacherStates
@@ -66,11 +68,123 @@ def _generate_code(length: int = 6) -> str:
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 
+def _period_start(period: str) -> str | None:
+    now = datetime.now(timezone.utc)
+    if period == "week":
+        since = now - timedelta(days=7)
+    elif period == "month":
+        since = now - timedelta(days=30)
+    else:
+        return None
+    return since.astimezone(timezone.utc).isoformat()
+
+
 def _question_summary(data: dict) -> str:
     qs = data.get("questions", [])
     cq = data.get("current_question", {})
     total = len(qs) + (1 if cq else 0)
     return f"Питань збережено: {len(qs)}"
+
+
+def _demo_answer_keyboard(question: dict, selected_ids: Optional[list[int]] = None) -> InlineKeyboardMarkup:
+    """Keyboard for the teacher demo test mode."""
+    question_type = question.get("question_type", QuestionType.SINGLE_CHOICE)
+    if question_type == QuestionType.MULTIPLE_CHOICE:
+        rows = []
+        selected_ids = selected_ids or []
+        for opt in question.get("options", []):
+            prefix = "✅ " if opt["id"] in selected_ids else "⭕ "
+            rows.append([
+                InlineKeyboardButton(
+                    text=f"{prefix}{opt['text']}",
+                    callback_data=f"demo_mult:{opt['id']}",
+                )
+            ])
+        rows.append([
+            InlineKeyboardButton(text="✅ Підтвердити", callback_data="demo_mult_confirm")
+        ])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    rows = []
+    for opt in question.get("options", []):
+        rows.append([
+            InlineKeyboardButton(
+                text=opt["text"],
+                callback_data=f"demo_ans:{question['id']}:{opt['id']}",
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _send_demo_question(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    lang = data.get("lang", "uk")
+    questions = data["questions"]
+    idx = data["current_index"]
+    question = questions[idx]
+    total = len(questions)
+    question_type = question.get("question_type", QuestionType.SINGLE_CHOICE)
+
+    if question_type == QuestionType.MULTIPLE_CHOICE:
+        keyboard = _demo_answer_keyboard(question, data.get("selected_option_ids", []))
+        instruction = "\n\n📌 *Оберіть одну або кілька правильних відповідей, потім натисніть «Підтвердити»*"
+    elif question_type == QuestionType.OPEN_ANSWER:
+        keyboard = None
+        instruction = i18n("open_answer_instruction", lang)
+    else:
+        keyboard = _demo_answer_keyboard(question)
+        instruction = ""
+
+    await message.answer(
+        f"{i18n('question_counter', lang, current=idx + 1, total=total)}\n\n{question['text']}{instruction}",
+        reply_markup=keyboard,
+        parse_mode="Markdown",
+    )
+
+
+async def _finish_demo_test(message: Message, state: FSMContext, lang: str) -> None:
+    data = await state.get_data()
+    total = len(data.get("questions", []))
+    earned = float(data.get("score", 0.0))
+    ratio = earned / total if total else 0.0
+    pct = round(ratio * 100)
+    max_points = data.get("max_points")
+    scale = float(max_points) if max_points is not None else float(total)
+    scaled = round(ratio * scale, 1) if scale > 0 else 0.0
+
+    await state.clear()
+    await message.answer(
+        i18n(
+            "demo_test_finished",
+            lang,
+            title=data.get("test_title", "Test"),
+            score=f"{scaled:.1f}",
+            total=f"{scale:.0f}",
+            pct=pct,
+        ),
+        reply_markup=teacher_menu(lang),
+        parse_mode="Markdown",
+    )
+
+
+async def _save_question_to_existing_test(state: FSMContext, cq: dict) -> bool:
+    """Save a freshly created question directly to an existing test."""
+    data = await state.get_data()
+    test_id = data.get("editing_test_id")
+    if not test_id:
+        return False
+
+    test = await queries.get_test_with_questions(test_id)
+    order = len(test.get("questions", [])) if test else 0
+    question_type = cq.get("question_type", QuestionType.SINGLE_CHOICE)
+    q_type_value = question_type.value if isinstance(question_type, QuestionType) else str(question_type)
+
+    question = await queries.add_question(test_id, cq["text"], order, q_type_value)
+    for option in cq.get("options", []):
+        await queries.add_option(question["id"], option["text"], bool(option.get("is_correct", False)))
+
+    await state.update_data(current_question=None)
+    return True
 
 
 async def _go_to_tests_list(callback: CallbackQuery, state: FSMContext, user: dict) -> None:
@@ -178,6 +292,30 @@ async def _finalize_open_question(
     """Save open-answer question with all reference answers marked correct."""
     option_dicts = [{"text": text, "is_correct": True} for text in opts]
     cq["options"] = option_dicts
+
+    if await _save_question_to_existing_test(state, cq):
+        data = await state.get_data()
+        test_id = data.get("editing_test_id")
+        test = await queries.get_test_with_questions(test_id) if test_id else None
+        questions = test.get("questions", []) if test else []
+        text = "✅ *Питання додано до тесту!*"
+        if isinstance(message_or_cq, CallbackQuery):
+            await message_or_cq.message.edit_text(text, parse_mode="Markdown")
+            await message_or_cq.message.answer(
+                f"❓ *Питання тесту: {test['title']}*\n\nОберіть питання для редагування:",
+                reply_markup=edit_questions_list_keyboard(test_id, questions),
+                parse_mode="Markdown",
+            )
+            await message_or_cq.answer(i18n("saved_notification", lang))
+        else:
+            await message_or_cq.answer(
+                text,
+                reply_markup=edit_questions_list_keyboard(test_id, questions),
+                parse_mode="Markdown",
+            )
+        await state.set_state(TeacherStates.editing_questions_menu)
+        return
+
     data = await state.get_data()
     questions: list = data.get("questions", [])
     questions.append(cq)
@@ -214,7 +352,7 @@ def _stats_weighted_average(stats: list[dict]) -> float:
     )
 
 
-def _format_stats_overview(stats: list[dict], lang: str) -> str:
+def _format_stats_overview(stats: list[dict], lang: str, *, period: str = "all") -> str:
     total_subjects = len(stats)
     total_tests = sum(s["test_count"] for s in stats)
     total_sessions = sum(s["total_sessions"] for s in stats)
@@ -233,6 +371,9 @@ def _format_stats_overview(stats: list[dict], lang: str) -> str:
             "stats_overview_pending", lang,
             tests=total_tests, subjects=total_subjects,
         ))
+
+    lines.append("")
+    lines.append(i18n("stats_period_label", lang, period=i18n(f"stats_period_{period}", lang)))
 
     if len(stats) > 1:
         lines.extend(["", i18n("stats_pick_subject", lang)])
@@ -264,9 +405,10 @@ def _format_test_results_list(test_title: str, sessions: list[dict], lang: str) 
 
 
 def _format_stats_subject(
-    stat: dict, sessions: list[dict], lang: str, *, max_lines: int = STATS_MAX_LINES,
+    stat: dict, sessions: list[dict], lang: str, *, period: str = "all", max_lines: int = STATS_MAX_LINES,
 ) -> str:
     lines = [i18n("stats_subject_title", lang, name=stat["subject_name"])]
+    lines.append(i18n("stats_period_label", lang, period=i18n(f"stats_period_{period}", lang)))
     if stat["total_sessions"]:
         pct = int(round(stat["average_score"]))
         lines.append(i18n(
@@ -289,15 +431,21 @@ def _format_stats_subject(
 
 
 async def _subject_stats_reply(
-    user: dict, subject_id: int, lang: str, *, show_overview_back: bool,
+    user: dict,
+    subject_id: int,
+    lang: str,
+    *,
+    show_overview_back: bool,
+    since: str | None = None,
+    period: str = "all",
 ) -> tuple[str | None, InlineKeyboardMarkup | None]:
-    stats = await queries.get_subject_statistics(user["id"])
+    stats = await queries.get_subject_statistics(user["id"], since=since)
     stat = next((s for s in stats if s["subject_id"] == subject_id), None)
     if not stat:
         return None, None
-    sessions = await queries.get_subject_sessions(user["id"], subject_id)
-    tests = await queries.get_subject_tests_stats(user["id"], subject_id)
-    text = _format_stats_subject(stat, sessions, lang)
+    sessions = await queries.get_subject_sessions(user["id"], subject_id, since=since)
+    tests = await queries.get_subject_tests_stats(user["id"], subject_id, since=since)
+    text = _format_stats_subject(stat, sessions, lang, period=period)
     tests_with_results = [t for t in tests if t["session_count"]]
     show_test_buttons = len(tests_with_results) > 1 or len(sessions) > STATS_MAX_LINES
     keyboard = statistics_subject_view_keyboard(
@@ -305,6 +453,8 @@ async def _subject_stats_reply(
         show_test_buttons=show_test_buttons,
         show_overview_back=show_overview_back,
     )
+    if keyboard is not None:
+        keyboard.inline_keyboard.extend(statistics_period_keyboard(lang, subject_id=subject_id).inline_keyboard)
     return text, keyboard
 
 
@@ -511,7 +661,7 @@ async def _prompt_max_points(message: Message, state: FSMContext, lang: str) -> 
 def _parse_max_points(text: str) -> Optional[int]:
     try:
         value = int(text.strip())
-        if 1 <= value <= 1000:
+        if 1 <= value <= 100:
             return value
     except ValueError:
         pass
@@ -675,7 +825,7 @@ async def enter_option(message: Message, state: FSMContext) -> None:
             body = _options_list(opts)
         await message.answer(
             body + "\n\n" + prompt,
-            reply_markup=options_input_keyboard(opts, lang),
+            reply_markup=options_input_keyboard(opts, lang, question_type=question_type),
             parse_mode="Markdown",
         )
 
@@ -734,6 +884,23 @@ async def mark_correct(callback: CallbackQuery, callback_data: OptionCallback, s
     ]
     cq["options"] = option_dicts
 
+    if await _save_question_to_existing_test(state, cq):
+        test_id = data.get("editing_test_id")
+        test = await queries.get_test_with_questions(test_id) if test_id else None
+        questions = test.get("questions", []) if test else []
+        await callback.message.edit_text(
+            "✅ *Питання додано до тесту!*",
+            parse_mode="Markdown",
+        )
+        await callback.message.answer(
+            f"❓ *Питання тесту: {test['title']}*\n\nОберіть питання для редагування:",
+            reply_markup=edit_questions_list_keyboard(test_id, questions),
+            parse_mode="Markdown",
+        )
+        await state.set_state(TeacherStates.editing_questions_menu)
+        await callback.answer(i18n("saved_notification", lang))
+        return
+
     # Append to questions list
     questions: list = data.get("questions", [])
     questions.append(cq)
@@ -778,6 +945,23 @@ async def mark_multiple_correct(callback: CallbackQuery, state: FSMContext) -> N
         ]
         cq["options"] = option_dicts
         
+        if await _save_question_to_existing_test(state, cq):
+            test_id = data.get("editing_test_id")
+            test = await queries.get_test_with_questions(test_id) if test_id else None
+            questions = test.get("questions", []) if test else []
+            await callback.message.edit_text(
+                "✅ *Питання додано до тесту!*",
+                parse_mode="Markdown",
+            )
+            await callback.message.answer(
+                f"❓ *Питання тесту: {test['title']}*\n\nОберіть питання для редагування:",
+                reply_markup=edit_questions_list_keyboard(test_id, questions),
+                parse_mode="Markdown",
+            )
+            await state.set_state(TeacherStates.editing_questions_menu)
+            await callback.answer(i18n("saved_notification", lang))
+            return
+
         # Append to questions list
         questions: list = data.get("questions", [])
         questions.append(cq)
@@ -937,8 +1121,9 @@ async def view_statistics(message: Message, state: FSMContext) -> None:
         return
     lang = user.get("language", "uk")
     await state.clear()
-
-    stats = await queries.get_subject_statistics(user["id"])
+    period = "all"
+    since = _period_start(period)
+    stats = await queries.get_subject_statistics(user["id"], since=since)
     if not stats:
         await message.answer(
             f"{i18n('stats_title', lang)}\n\n{i18n('stats_empty', lang)}",
@@ -949,7 +1134,12 @@ async def view_statistics(message: Message, state: FSMContext) -> None:
     sorted_stats = _sort_statistics(stats)
     if len(sorted_stats) == 1:
         text, reply_markup = await _subject_stats_reply(
-            user, sorted_stats[0]["subject_id"], lang, show_overview_back=False,
+            user,
+            sorted_stats[0]["subject_id"],
+            lang,
+            show_overview_back=False,
+            since=since,
+            period=period,
         )
         if not text:
             await message.answer(
@@ -958,8 +1148,9 @@ async def view_statistics(message: Message, state: FSMContext) -> None:
             )
             return
     else:
-        text = _format_stats_overview(sorted_stats, lang)
+        text = _format_stats_overview(sorted_stats, lang, period=period)
         reply_markup = statistics_subjects_keyboard(sorted_stats)
+        reply_markup.inline_keyboard.extend(statistics_period_keyboard(lang).inline_keyboard)
     await message.answer(text, reply_markup=reply_markup, parse_mode="Markdown")
     await state.set_state(TeacherStates.viewing_statistics)
 
@@ -1009,7 +1200,13 @@ async def show_statistics(callback: CallbackQuery, callback_data: StatisticsCall
         return
     lang = user.get("language", "uk")
 
-    stats = await queries.get_subject_statistics(user["id"])
+    data = await state.get_data()
+    period = data.get("stats_period", "all")
+    if callback_data.action == "period":
+        period = callback_data.period or "all"
+    await state.update_data(stats_period=period)
+    since = _period_start(period)
+    stats = await queries.get_subject_statistics(user["id"], since=since)
     if not stats:
         await callback.message.edit_text(
             f"{i18n('stats_title', lang)}\n\n{i18n('stats_empty', lang)}",
@@ -1021,12 +1218,33 @@ async def show_statistics(callback: CallbackQuery, callback_data: StatisticsCall
 
     sorted_stats = _sort_statistics(stats)
 
+    if callback_data.action == "period":
+        period = callback_data.period or "all"
+        await state.update_data(stats_period=period)
+        subject_id = callback_data.id or 0
+        if subject_id:
+            text, keyboard = await _subject_stats_reply(
+                user,
+                subject_id,
+                lang,
+                show_overview_back=len(sorted_stats) > 1,
+                since=_period_start(period),
+                period=period,
+            )
+            if not text:
+                await callback.answer(i18n("subject_not_found", lang), show_alert=True)
+                return
+            await state.update_data(stats_subject_id=subject_id)
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+            await callback.answer()
+            return
+
     if callback_data.action == "test" and callback_data.id:
         test = await queries.get_test(callback_data.id)
         if not test:
             await callback.answer(i18n("test_not_found", lang), show_alert=True)
             return
-        sessions = await queries.get_test_results(callback_data.id)
+        sessions = await queries.get_test_results(callback_data.id, since=since)
         subject_id = callback_data.sub or test.get("subject_id", 0)
         await callback.message.edit_text(
             _format_test_results_list(test["title"], sessions, lang),
@@ -1038,12 +1256,17 @@ async def show_statistics(callback: CallbackQuery, callback_data: StatisticsCall
 
     if callback_data.action == "subject" and callback_data.id:
         text, keyboard = await _subject_stats_reply(
-            user, callback_data.id, lang,
+            user,
+            callback_data.id,
+            lang,
             show_overview_back=len(sorted_stats) > 1,
+            since=since,
+            period=period,
         )
         if not text:
             await callback.answer(i18n("subject_not_found", lang), show_alert=True)
             return
+        await state.update_data(stats_subject_id=callback_data.id)
         await callback.message.edit_text(
             text, reply_markup=keyboard, parse_mode="Markdown",
         )
@@ -1052,15 +1275,23 @@ async def show_statistics(callback: CallbackQuery, callback_data: StatisticsCall
 
     if len(sorted_stats) == 1:
         text, keyboard = await _subject_stats_reply(
-            user, sorted_stats[0]["subject_id"], lang, show_overview_back=False,
+            user,
+            sorted_stats[0]["subject_id"],
+            lang,
+            show_overview_back=False,
+            since=since,
+            period=period,
         )
+        await state.update_data(stats_subject_id=sorted_stats[0]["subject_id"])
         await callback.message.edit_text(
             text, reply_markup=keyboard, parse_mode="Markdown",
         )
     else:
+        reply_markup = statistics_subjects_keyboard(sorted_stats)
+        reply_markup.inline_keyboard.extend(statistics_period_keyboard(lang).inline_keyboard)
         await callback.message.edit_text(
-            _format_stats_overview(sorted_stats, lang),
-            reply_markup=statistics_subjects_keyboard(sorted_stats),
+            _format_stats_overview(sorted_stats, lang, period=period),
+            reply_markup=reply_markup,
             parse_mode="Markdown",
         )
     await callback.answer()
@@ -1072,6 +1303,8 @@ async def handle_test_action(callback: CallbackQuery, callback_data: TestCallbac
         await _show_results(callback, callback_data.id, state)
     elif callback_data.action == "delete":
         await _delete_test(callback, callback_data.id, state)
+    elif callback_data.action == "demo":
+        await start_teacher_self_test(callback, callback_data, state)
     elif callback_data.action == "open":
         # Show action menu for the selected test
         test = await queries.get_test(callback_data.id)
@@ -1080,6 +1313,7 @@ async def handle_test_action(callback: CallbackQuery, callback_data: TestCallbac
             return
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📊 Переглянути результати", callback_data=TestCallback(id=callback_data.id, action="results").pack())],
+            [InlineKeyboardButton(text="🧪 Пройти для тестування", callback_data=TestCallback(id=callback_data.id, action="demo").pack())],
             [InlineKeyboardButton(text="✏️ Редагувати", callback_data=EditTestCallback(id=callback_data.id, action="menu").pack())],
             [InlineKeyboardButton(text="🗑 Видалити", callback_data=TestCallback(id=callback_data.id, action="delete").pack())],
             [InlineKeyboardButton(text="⬅️ До списку предметів", callback_data=BackCallback(to="teacher_tests").pack())],
@@ -1090,6 +1324,189 @@ async def handle_test_action(callback: CallbackQuery, callback_data: TestCallbac
             parse_mode="Markdown",
         )
     await callback.answer()
+
+
+@router.callback_query(TeacherStates.viewing_tests_and_results, TestCallback.filter(F.action == "demo"))
+async def start_teacher_self_test(callback: CallbackQuery, callback_data: TestCallback, state: FSMContext) -> None:
+    """Launch a local demo run of the teacher's own test without saving results to DB."""
+    user = await _require_teacher(callback)
+    if not user:
+        return
+
+    test = await queries.get_test_with_questions(callback_data.id)
+    if not test or not test.get("questions"):
+        await callback.answer(i18n("test_no_questions", user.get("language", "uk")), show_alert=True)
+        return
+
+    lang = user.get("language", "uk")
+    max_pts = float(test["max_points"]) if test.get("max_points") is not None else float(len(test["questions"]))
+
+    await state.clear()
+    await state.set_state(TeacherStates.demo_taking_test)
+    await state.update_data(
+        test_id=test["id"],
+        test_title=test["title"],
+        questions=test["questions"],
+        current_index=0,
+        score=0.0,
+        max_points=max_pts,
+        show_answer_correctness=test.get("show_answer_correctness", False),
+        selected_option_ids=[],
+        lang=lang,
+    )
+
+    await callback.message.edit_text(
+        i18n("demo_test_intro", lang, title=test["title"], count=len(test["questions"])),
+        parse_mode="Markdown",
+    )
+    await _send_demo_question(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(TeacherStates.demo_taking_test, F.data.startswith("demo_ans:"))
+async def handle_demo_single_answer(callback: CallbackQuery, state: FSMContext) -> None:
+    user = await _require_teacher(callback)
+    if not user:
+        return
+
+    _, q_id_str, opt_id_str = callback.data.split(":")
+    question_id = int(q_id_str)
+    option_id = int(opt_id_str)
+
+    data = await state.get_data()
+    lang = data.get("lang", user.get("language", "uk"))
+    questions = data["questions"]
+    idx = data["current_index"]
+    question = questions[idx]
+
+    selected_opt = next((opt for opt in question.get("options", []) if opt["id"] == option_id), None)
+    if not selected_opt:
+        await callback.answer(i18n("answer_error", lang), show_alert=True)
+        return
+
+    is_correct = bool(selected_opt.get("is_correct"))
+    score = float(data.get("score", 0.0)) + (1 if is_correct else 0)
+    await state.update_data(score=score, current_index=idx + 1)
+
+    show_answers = data.get("show_answer_correctness", False)
+    if show_answers:
+        feedback = i18n("correct_answer", lang) if is_correct else i18n("wrong_answer", lang, correct=next((opt["text"] for opt in question.get("options", []) if opt.get("is_correct")), "—"))
+    else:
+        feedback = i18n("answer_saved", lang)
+    await callback.message.edit_reply_markup()
+    await callback.message.answer(feedback, parse_mode="Markdown")
+
+    if idx + 1 >= len(questions):
+        await _finish_demo_test(callback.message, state, lang)
+    else:
+        await _send_demo_question(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(TeacherStates.demo_taking_test, F.data.startswith("demo_mult:"))
+async def toggle_demo_multiple_answer(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.data == "demo_mult_confirm":
+        return
+
+    _, opt_id_str = callback.data.split(":")
+    option_id = int(opt_id_str)
+    data = await state.get_data()
+    selected = list(data.get("selected_option_ids", []))
+    if option_id in selected:
+        selected.remove(option_id)
+    else:
+        selected.append(option_id)
+    await state.update_data(selected_option_ids=selected)
+
+    questions = data["questions"]
+    idx = data["current_index"]
+    question = questions[idx]
+    await callback.message.edit_reply_markup(reply_markup=_demo_answer_keyboard(question, selected))
+    await callback.answer()
+
+
+@router.callback_query(TeacherStates.demo_taking_test, F.data == "demo_mult_confirm")
+async def confirm_demo_multiple_answer(callback: CallbackQuery, state: FSMContext) -> None:
+    user = await _require_teacher(callback)
+    if not user:
+        return
+
+    data = await state.get_data()
+    lang = data.get("lang", user.get("language", "uk"))
+    questions = data["questions"]
+    idx = data["current_index"]
+    question = questions[idx]
+    selected = set(data.get("selected_option_ids", []))
+
+    if not selected:
+        await callback.answer(i18n("select_at_least_one", lang), show_alert=True)
+        return
+
+    correct_ids = {opt["id"] for opt in question.get("options", []) if opt.get("is_correct")}
+    if not correct_ids:
+        score_contrib = 0.0
+    else:
+        correct_selections = len(selected & correct_ids)
+        incorrect_selections = len(selected - correct_ids)
+        score_contrib = max(0.0, min(1.0, (correct_selections / len(correct_ids)) - incorrect_selections * 0.5))
+
+    score = float(data.get("score", 0.0)) + score_contrib
+    await state.update_data(score=score, selected_option_ids=[], current_index=idx + 1)
+
+    show_answers = data.get("show_answer_correctness", False)
+    if show_answers:
+        if score_contrib >= 1.0:
+            feedback = i18n("correct_answer", lang)
+        elif score_contrib > 0:
+            feedback = i18n("partial_correct", lang, score=int(score_contrib * 100))
+        else:
+            feedback = i18n("wrong_answer_multiple", lang, correct=", ".join(opt["text"] for opt in question.get("options", []) if opt.get("is_correct")))
+    else:
+        feedback = i18n("answer_saved", lang)
+
+    await callback.message.edit_reply_markup()
+    await callback.message.answer(feedback, parse_mode="Markdown")
+
+    if idx + 1 >= len(questions):
+        await _finish_demo_test(callback.message, state, lang)
+    else:
+        await _send_demo_question(callback.message, state)
+    await callback.answer()
+
+
+@router.message(TeacherStates.demo_taking_test, F.text)
+async def handle_demo_open_answer(message: Message, state: FSMContext) -> None:
+    user = await queries.get_user(message.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+    data = await state.get_data()
+    questions = data["questions"]
+    idx = data["current_index"]
+    question = questions[idx]
+
+    if question.get("question_type", QuestionType.SINGLE_CHOICE) != QuestionType.OPEN_ANSWER:
+        await message.answer(i18n("use_buttons_not_text", lang))
+        return
+
+    answer_text = message.text.strip()
+    if not answer_text:
+        await message.answer(i18n("open_answer_empty", lang))
+        return
+
+    is_correct = matches_open_answer(answer_text, question.get("options", []))
+    score = float(data.get("score", 0.0)) + (1 if is_correct else 0)
+    await state.update_data(score=score, current_index=idx + 1)
+
+    show_answers = data.get("show_answer_correctness", False)
+    if show_answers:
+        feedback = i18n("correct_answer", lang) if is_correct else i18n("wrong_answer_open", lang, correct=", ".join(opt["text"] for opt in question.get("options", []) if opt.get("is_correct")))
+    else:
+        feedback = i18n("answer_saved", lang)
+    await message.answer(feedback, parse_mode="Markdown")
+
+    if idx + 1 >= len(questions):
+        await _finish_demo_test(message, state, lang)
+    else:
+        await _send_demo_question(message, state)
 
 
 async def _show_results(callback: CallbackQuery, test_id: int, state: FSMContext) -> None:
@@ -1580,6 +1997,20 @@ async def edit_questions_list(callback: CallbackQuery, callback_data: EditTestCa
     await callback.answer()
 
 
+@router.callback_query(TeacherStates.editing_questions_menu, EditTestCallback.filter(F.action == "add_question"))
+async def start_add_question_to_test(callback: CallbackQuery, callback_data: EditTestCallback, state: FSMContext) -> None:
+    """Start adding a new question to an existing test."""
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+    await state.update_data(editing_test_id=callback_data.id)
+    await callback.message.edit_text(
+        i18n("enter_question_text", lang, num=1),
+        parse_mode="Markdown",
+    )
+    await state.set_state(TeacherStates.entering_question_text)
+    await callback.answer()
+
+
 @router.callback_query(TeacherStates.editing_questions_menu, EditQuestionCallback.filter(F.action == "delete"))
 async def delete_question(callback: CallbackQuery, callback_data: EditQuestionCallback, state: FSMContext) -> None:
     """Delete a question."""
@@ -1798,6 +2229,12 @@ async def delete_question_option(callback: CallbackQuery, callback_data: EditOpt
     if not question_id:
         await callback.answer(i18n("question_edit_not_found", lang), show_alert=True)
         return
+
+    question = await queries.get_question(question_id)
+    if not question:
+        await callback.answer(i18n("delete_error", lang), show_alert=True)
+        return
+    open_q = _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE))
 
     question = await queries.get_question(question_id)
     if not question:

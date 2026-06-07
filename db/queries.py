@@ -465,16 +465,18 @@ async def complete_session_from_answers(session_id: int, total_questions: int) -
     return scaled, scale, pct
 
 
-async def get_test_results(test_id: int) -> list[dict]:
-    """Get all completed sessions for a test (explicit filtering)."""
-    res = (
-        await supabase_admin.table("test_sessions")
+async def get_test_results(test_id: int, since: str | None = None) -> list[dict]:
+    """Get completed sessions for a test, optionally limited by date."""
+    query = (
+        supabase_admin.table("test_sessions")
         .select("*, users(name)")
         .eq("test_id", test_id)
         .not_.is_("completed_at", "null")
         .order("completed_at", desc=True)
-        .execute()
     )
+    if since:
+        query = query.gte("completed_at", since)
+    res = await query.execute()
     return res.data or []
 
 
@@ -688,8 +690,8 @@ async def get_tests_by_teacher(teacher_id: int) -> list[dict]:
 
 # Statistics
 
-async def get_subject_statistics(teacher_id: int) -> list[dict]:
-    """Get statistics per subject for a teacher: subject name, test count, average score."""
+async def get_subject_statistics(teacher_id: int, since: str | None = None) -> list[dict]:
+    """Get statistics per subject for a teacher, optionally limited by period."""
     # Get all active tests for the teacher with subject info
     tests_res = (
         await supabase_admin.table("tests")
@@ -720,13 +722,15 @@ async def get_subject_statistics(teacher_id: int) -> list[dict]:
     
     # Get sessions for all tests
     test_ids = [t["id"] for t in tests]
-    sessions_res = (
-        await supabase_admin.table("test_sessions")
+    query = (
+        supabase_admin.table("test_sessions")
         .select("test_id, percentage")
         .in_("test_id", test_ids)
         .not_.is_("completed_at", "null")
-        .execute()
     )
+    if since:
+        query = query.gte("completed_at", since)
+    sessions_res = await query.execute()
     sessions = sessions_res.data or []
     
     # Calculate totals using saved percentage
@@ -758,8 +762,8 @@ async def get_subject_statistics(teacher_id: int) -> list[dict]:
     return sorted(result, key=lambda x: x["subject_name"])
 
 
-async def get_subject_sessions(teacher_id: int, subject_id: int) -> list[dict]:
-    """Completed sessions for a teacher's subject with student name and test title."""
+async def get_subject_sessions(teacher_id: int, subject_id: int, since: str | None = None) -> list[dict]:
+    """Completed sessions for a teacher's subject, optionally limited by period."""
     tests_res = (
         await supabase_admin.table("tests")
         .select("id, title")
@@ -774,22 +778,24 @@ async def get_subject_sessions(teacher_id: int, subject_id: int) -> list[dict]:
 
     test_titles = {t["id"]: t["title"] for t in tests}
     test_ids = list(test_titles.keys())
-    sessions_res = (
-        await supabase_admin.table("test_sessions")
+    query = (
+        supabase_admin.table("test_sessions")
         .select("test_id, score, total_questions, percentage, completed_at, users(name)")
         .in_("test_id", test_ids)
         .not_.is_("completed_at", "null")
         .order("completed_at", desc=True)
-        .execute()
     )
+    if since:
+        query = query.gte("completed_at", since)
+    sessions_res = await query.execute()
     sessions = sessions_res.data or []
     for session in sessions:
         session["test_title"] = test_titles.get(session["test_id"], "—")
     return sessions
 
 
-async def get_subject_tests_stats(teacher_id: int, subject_id: int) -> list[dict]:
-    """Active tests in a subject with attempt count and average score."""
+async def get_subject_tests_stats(teacher_id: int, subject_id: int, since: str | None = None) -> list[dict]:
+    """Active tests in a subject with attempt count and average score, optionally limited by period."""
     tests_res = (
         await supabase_admin.table("tests")
         .select("id, title")
@@ -804,13 +810,15 @@ async def get_subject_tests_stats(teacher_id: int, subject_id: int) -> list[dict
         return []
 
     test_ids = [t["id"] for t in tests]
-    sessions_res = (
-        await supabase_admin.table("test_sessions")
+    query = (
+        supabase_admin.table("test_sessions")
         .select("test_id, percentage")
         .in_("test_id", test_ids)
         .not_.is_("completed_at", "null")
-        .execute()
     )
+    if since:
+        query = query.gte("completed_at", since)
+    sessions_res = await query.execute()
     sessions = sessions_res.data or []
 
     per_test: dict[int, dict] = {

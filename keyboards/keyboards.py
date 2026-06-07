@@ -6,6 +6,7 @@ from aiogram.types import (
 )
 
 from config.i18n import i18n
+from db.queries import QuestionType
 
 from .callbacks import (
     RoleCallback, LangCallback, SubjectCallback, TestCallback,
@@ -218,17 +219,24 @@ def limited_attempts_keyboard(lang: str = "uk") -> InlineKeyboardMarkup:
                              callback_data=BackCallback(to="edit_menu").pack()),
     ]])
 
+def _is_open_answer(question_type) -> bool:
+    return question_type in (QuestionType.OPEN_ANSWER, QuestionType.OPEN_ANSWER.value)
+
+
 # Options input during question creation
 
-def options_input_keyboard(options: list[str], lang: str = "uk") -> InlineKeyboardMarkup:
-    """Shows current options + 'Done' button (enabled when >= 2 options)."""
+def options_input_keyboard(options: list[str], lang: str = "uk", question_type=None) -> InlineKeyboardMarkup:
+    """Shows current options and a completion button suitable for the question type."""
     rows = []
     for i, text in enumerate(options, start=1):
         rows.append([InlineKeyboardButton(text=f"  {i}. {text}", callback_data="noop")])
 
-    if len(options) >= 2:
+    open_q = _is_open_answer(question_type)
+    min_options = 1 if open_q else 2
+    if len(options) >= min_options:
+        button_text = i18n("done_options_open", lang) if open_q else i18n("done_options", lang)
         rows.append([InlineKeyboardButton(
-            text=i18n("done_options", lang),
+            text=button_text,
             callback_data=DoneOptionsCallback().pack()
         )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -320,6 +328,12 @@ def edit_questions_list_keyboard(test_id: int, questions: list[dict]) -> InlineK
                 callback_data=EditQuestionCallback(id=q["id"], action="delete").pack()
             ),
         ])
+    rows.append([
+        InlineKeyboardButton(
+            text="➕ Додати питання",
+            callback_data=EditTestCallback(id=test_id, action="add_question").pack()
+        )
+    ])
     rows.append([InlineKeyboardButton(text="⬅️ Назад",
                                      callback_data=EditTestCallback(id=test_id, action="menu").pack())])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -423,6 +437,26 @@ def back_keyboard(to: str) -> InlineKeyboardMarkup:
 
 
 # Statistics
+
+def statistics_period_keyboard(lang: str = "uk", *, subject_id: int = 0) -> InlineKeyboardMarkup:
+    """Buttons to switch teacher statistics by period."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text=i18n("stats_period_all", lang),
+                callback_data=StatisticsCallback(action="period", id=subject_id, period="all").pack(),
+            ),
+            InlineKeyboardButton(
+                text=i18n("stats_period_week", lang),
+                callback_data=StatisticsCallback(action="period", id=subject_id, period="week").pack(),
+            ),
+            InlineKeyboardButton(
+                text=i18n("stats_period_month", lang),
+                callback_data=StatisticsCallback(action="period", id=subject_id, period="month").pack(),
+            ),
+        ],
+    ])
+
 
 def statistics_subjects_keyboard(stats: list[dict]) -> InlineKeyboardMarkup:
     """One button per subject; opens subject detail."""
