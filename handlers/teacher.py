@@ -2236,6 +2236,12 @@ async def delete_question_option(callback: CallbackQuery, callback_data: EditOpt
         return
     open_q = _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE))
 
+    question = await queries.get_question(question_id)
+    if not question:
+        await callback.answer(i18n("delete_error", lang), show_alert=True)
+        return
+    open_q = _is_open_answer(question.get("question_type", QuestionType.SINGLE_CHOICE))
+
     option = await queries.get_option(callback_data.id)
     if not option:
         await callback.answer(i18n("delete_error", lang), show_alert=True)
