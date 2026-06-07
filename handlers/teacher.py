@@ -661,7 +661,7 @@ async def _prompt_max_points(message: Message, state: FSMContext, lang: str) -> 
 def _parse_max_points(text: str) -> Optional[int]:
     try:
         value = int(text.strip())
-        if 1 <= value <= 1000:
+        if 1 <= value <= 100:
             return value
     except ValueError:
         pass
