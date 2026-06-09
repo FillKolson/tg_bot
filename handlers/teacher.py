@@ -1,6 +1,3 @@
-"""
-Teacher handlers - create tests, manage questions, view results.
-"""
 import logging
 import random
 import string
@@ -1299,6 +1296,9 @@ async def show_statistics(callback: CallbackQuery, callback_data: StatisticsCall
 
 @router.callback_query(TeacherStates.viewing_tests_and_results, TestCallback.filter())
 async def handle_test_action(callback: CallbackQuery, callback_data: TestCallback, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+
     if callback_data.action == "results":
         await _show_results(callback, callback_data.id, state)
     elif callback_data.action == "delete":
@@ -1653,6 +1653,8 @@ async def edit_test_menu(callback: CallbackQuery, callback_data: EditTestCallbac
     if not user:
         return
     
+    lang = user.get("language", "uk") if user else "uk"
+
     test = await queries.get_test(callback_data.id)
     if not test or test["teacher_id"] != user["id"]:
         await callback.answer(i18n("not_author", lang), show_alert=True)
@@ -1979,6 +1981,9 @@ async def edit_test_limited_attempts_save(callback: CallbackQuery, callback_data
 @router.callback_query(TeacherStates.editing_test, EditTestCallback.filter(F.action == "questions"))
 async def edit_questions_list(callback: CallbackQuery, callback_data: EditTestCallback, state: FSMContext) -> None:
     """Show list of questions for editing."""
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+
     test = await queries.get_test_with_questions(callback_data.id)
     questions = test.get("questions", []) if test else []
     
@@ -2022,6 +2027,9 @@ async def delete_question(callback: CallbackQuery, callback_data: EditQuestionCa
 @router.callback_query(TeacherStates.editing_questions_menu, EditQuestionCallback.filter(F.action == "edit"))
 async def edit_question_prompt(callback: CallbackQuery, callback_data: EditQuestionCallback, state: FSMContext) -> None:
     """Show question edit menu."""
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+
     question = await queries.get_question(callback_data.id)
     if not question:
         await callback.answer(i18n("question_not_found", lang), show_alert=True)
@@ -2050,6 +2058,9 @@ async def delete_question_from_edit_menu(callback: CallbackQuery, callback_data:
 
 @router.callback_query(TeacherStates.selecting_question_to_edit, EditQuestionCallback.filter(F.action == "text"))
 async def edit_question_text_prompt(callback: CallbackQuery, callback_data: EditQuestionCallback, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+
     question = await queries.get_question(callback_data.id)
     if not question:
         await callback.answer(i18n("question_not_found", lang), show_alert=True)
@@ -2068,6 +2079,9 @@ async def edit_question_text_prompt(callback: CallbackQuery, callback_data: Edit
 
 @router.callback_query(TeacherStates.selecting_question_to_edit, EditQuestionCallback.filter(F.action == "options"))
 async def edit_question_options_prompt(callback: CallbackQuery, callback_data: EditQuestionCallback, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+
     question = await queries.get_question(callback_data.id)
     if not question:
         await callback.answer(i18n("question_not_found", lang), show_alert=True)
@@ -2119,6 +2133,9 @@ async def add_accepted_answer_prompt(callback: CallbackQuery, callback_data: Edi
 
 @router.message(TeacherStates.editing_question_text, F.text)
 async def edit_question_text_save(message: Message, state: FSMContext) -> None:
+    user = await queries.get_user(message.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+
     new_text = message.text.strip()
     if not new_text:
         await message.answer(i18n("question_text_empty", lang))
@@ -2375,6 +2392,9 @@ async def back_from_edit_option_text(callback: CallbackQuery, state: FSMContext)
 
 @router.callback_query(TeacherStates.selecting_question_to_edit, BackCallback.filter())
 async def back_from_selecting_question(callback: CallbackQuery, state: FSMContext) -> None:
+    user = await queries.get_user(callback.from_user.id)
+    lang = user.get("language", "uk") if user else "uk"
+
     data = await state.get_data()
     test_id = data.get("editing_test_id")
     if not test_id:

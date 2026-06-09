@@ -1,6 +1,3 @@
-"""
-Student handlers - browse subjects, take tests, view results.
-"""
 import logging
 import asyncio
 from datetime import datetime, timezone

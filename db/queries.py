@@ -1,7 +1,3 @@
-"""
-Database queries module.
-Initialize with init() before use. Uses admin client to bypass RLS.
-"""
 # All write operations use the admin client and bypass RLS by design.
 from __future__ import annotations
 
